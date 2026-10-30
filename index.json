@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "repo": "anxelswanz/supergantt-plugins",
+  "updatedAt": "2026-10-30T15:34:28.084Z",
+  "plugins": [
+    {
+      "id": "daily-report",
+      "name": "日报",
+      "version": "1.0.0",
+      "apiVersion": "1.1",
+      "author": "Ronghui",
+      "description": "按今天记下的问题和风险一键生成日报，分「问题」「风险」两类逐条编号，可直接复制",
+      "permissions": {},
+      "skills": [],
+      "download": {
+        "url": "https://github.com/anxelswanz/supergantt-plugins/releases/download/daily-report-v1.0.0/daily-report-1.0.0.zip",
+        "sha256": "df8468256b9c654885f0a7030ec0f67a039331c3f4eafc45d151b25441990b5c",
+        "size": 3420
+      }
+    },
+    {
+      "id": "fault-tree",
+      "name": "故障树分析",
+      "version": "1.0.0",
+      "apiVersion": "1.2",
+      "author": "Ronghui",
+      "description": "把事项里的问题、阻碍当成顶事件，用与门 / 或门一层层拆到基本事件；标记已确认 / 已排除，自动推出哪条因果链成立、还剩哪些最小割集",
+      "permissions": {},
+      "skills": [],
+      "download": {
+        "url": "https://github.com/anxelswanz/supergantt-plugins/releases/download/fault-tree-v1.0.0/fault-tree-1.0.0.zip",
+        "sha256": "67756d8f1f3fd968c2a3abde38c9168a2e4c96b1c71569066d53bdbd795d4d32",
+        "size": 24572
+      }
+    },
+    {
+      "id": "feishu-sync",
+      "name": "飞书同步",
+      "version": "1.6.0",
+      "apiVersion": "1.2",
+      "author": "Ronghui",
+      "description": "把分拣好的事项同步到飞书多维表格：后台调用 Claude，按表格字段智能填写、润色。也可以在 Claude Code 里用 gantt-feishu 技能手动同步",
+      "permissions": {
+        "exec": [
+          "claude",
+          "lark-cli",
+          "gantt"
+        ]
+      },
+      "skills": [
+        "gantt-feishu"
+      ],
+      "download": {
+        "url": "https://github.com/anxelswanz/supergantt-plugins/releases/download/feishu-sync-v1.6.0/feishu-sync-1.6.0.zip",
+        "sha256": "66b7f0e118840fa5dd58bb77677ede5a8b62ad16f60dacb42a637eabb6afb725",
+        "size": 24208
+      }
+    }
+  ]
+}
