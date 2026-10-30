@@ -280,22 +280,30 @@ export function cutSetStatus(tree, set) {
 }
 
 /**
- * 根因：已确认、拆到底（叶子），而且从它到顶事件一路都成立 ——
- * 也就是红色那条因果链最底下的那几个。排除掉了角标自然消失。
+ * 根因：角色是「原因」、在成立的因果链上（从它到顶事件一路都成立），
+ * 而且它下面没有更深的、同样成立的原因 —— 拆了三层都是原因时，只有最底下那个是根因，
+ * 上面两层是因果链。标成「现象」的永远不是根因；现象下面成立的原因会接着往下找。
+ * 排除掉了角标自然消失。
  */
 export function rootCauses(tree, ev = evaluate(tree)) {
   const out = new Set();
+  /** 返回这棵子树里有没有成立的原因 */
   const walk = (id) => {
     const n = tree.nodes[id];
-    if (!n || ev[id] !== "confirmed") return;
-    if (isLeaf(n)) out.add(id);
-    else causeKids(tree, n).forEach(walk);
+    if (!n || ev[id] !== "confirmed") return false;
+    const below = causeKids(tree, n).map(walk).some(Boolean);
+    if (below) return true;
+    if (id !== tree.root && roleOf(n) === "cause") {
+      out.add(id);
+      return true;
+    }
+    return false;
   };
   walk(tree.root);
   return out;
 }
 
-/* ---------------- 根因 → 解决 ---------------- */
+/* ---------------- 根因 → 确认解决方案 ---------------- */
 
 /** 从顶事件到这个节点的标签链，第一项是顶事件 */
 export function causeChain(tree, id) {
@@ -304,60 +312,111 @@ export function causeChain(tree, id) {
   return path;
 }
 
-/** after 里有、before 里没有的根因 —— 「刚刚标已确认，它就成了根因」时弹窗 */
-export function newRootCauses(before, after) {
-  const was = rootCauses(before);
-  return [...rootCauses(after)].filter((id) => !was.has(id));
-}
-
-/** 挂在这个节点下的对策（按顺序），弹窗里的「解决步骤」就是它们 */
+/** 挂在这个节点下的对策（按顺序） */
 export const actionsUnder = (tree, id) =>
   (tree.nodes[id]?.children ?? []).map((c) => tree.nodes[c]).filter((c) => c && isAction(c));
 
-/**
- * 把弹窗里写的步骤落到树上：根因下的对策逐条对上（改名、标已完成），
- * 多的新建、少了的删掉；方案记在树上，根因记下解决时间。一次 mutateTree，撤销一步回去
- */
-export function applyResolution(tree, rootId, { steps, solution, day, now }) {
-  const clean = steps.map((x) => x.trim()).filter(Boolean);
-  const old = actionsUnder(tree, rootId);
-  let t = tree;
-  clean.forEach((label, i) => {
-    if (old[i]) t = updateNode(t, old[i].id, { label, actionStatus: "done" });
-    else t = addChild(t, rootId, { label, role: "action", actionStatus: "done", at: day }).tree;
-  });
-  for (const extra of old.slice(clean.length)) t = removeNode(t, extra.id);
-  t = updateNode(t, rootId, { resolvedAt: now });
-  return { ...t, solution: solution.trim() };
-}
+/** 「无效」的对策做了没用，不算方案 */
+const counts = (a) => a.actionStatus !== "ineffective";
 
 /**
- * 交给别的插件（飞书）的结构化分析。步骤取全部根因下已完成的对策，
- * 一棵树有几个根因时也只有一份方案（方案针对的是顶事件那个问题）
+ * 解决步骤：整棵树的事件按层级写成大纲，每行带验证结果和日期 —— 完整的排查过程，
+ * 排除掉的也在。对策不在这里（它们是解决方案）。顶事件是标题，不占一行
  */
+export function stepsOutline(tree, ev = evaluate(tree), roots = rootCauses(tree, ev)) {
+  const lines = [];
+  const walk = (id, prefix, depth) => {
+    causeKids(tree, tree.nodes[id]).forEach((c, i) => {
+      const n = tree.nodes[c];
+      const no = prefix ? `${prefix}.${i + 1}` : `${i + 1}`;
+      const st = STATUS_LABELS[ev[c]] + (roots.has(c) ? "（根因）" : "");
+      // 第一层写「1.」，往下写「1.1」「1.1.2」
+      const shown = depth === 0 ? `${no}.` : no;
+      lines.push(`${"   ".repeat(depth)}${shown} ${n.label || "（未填写）"} — ${st} · ${nodeDay(tree, n)}`);
+      walk(c, no, depth + 1);
+    });
+  };
+  walk(tree.root, "", 0);
+  return lines;
+}
+
+/** 交给事项结论和飞书的那一份。根因各自带因果链和对策；方案 = 全部根因下的有效对策 */
 export function buildAnalysis(tree) {
-  const roots = [...rootCauses(tree)];
+  const ev = evaluate(tree);
+  const roots = [...rootCauses(tree, ev)];
+  const rootCauseList = roots.map((id) => ({
+    label: tree.nodes[id].label || "（未填写）",
+    chain: causeChain(tree, id),
+    actions: actionsUnder(tree, id).filter(counts).map((a) => a.label).filter(Boolean),
+  }));
   return {
     source: "fault-tree",
     problem: treeTitle(tree),
-    rootCauses: roots.map((id) => ({ label: tree.nodes[id].label || "（未填写）", chain: causeChain(tree, id) })),
-    steps: roots.flatMap((id) => actionsUnder(tree, id).filter((a) => a.actionStatus === "done").map((a) => a.label)).filter(Boolean),
-    solution: tree.solution ?? "",
+    rootCauses: rootCauseList,
+    steps: stepsOutline(tree, ev, new Set(roots)),
+    solution: rootCauseList.flatMap((r) => r.actions),
   };
 }
 
 /** 写进事项「结论」的那段文字。事项页、日报、复盘读的都是它 */
-export function resolutionText(analysis) {
+export function resolutionText(a) {
   const lines = [];
-  if (analysis.solution) lines.push(`解决方案：${analysis.solution}`);
-  if (analysis.rootCauses.length) lines.push(`根因：${analysis.rootCauses.map((r) => r.label).join("；")}`);
-  for (const r of analysis.rootCauses) if (r.chain.length > 2) lines.push(`因果链：${r.chain.join(" → ")}`);
-  if (analysis.steps.length) {
-    lines.push("解决步骤：");
-    analysis.steps.forEach((x, i) => lines.push(`${i + 1}. ${x}`));
-  }
+  lines.push(a.solution.length ? `解决方案：${a.solution.join("；")}` : "解决方案：未制定");
+  if (a.rootCauses.length) lines.push(`根因：${a.rootCauses.map((r) => r.label).join("；")}`);
+  for (const r of a.rootCauses) lines.push(`因果链：${r.chain.join(" → ")}`);
+  if (a.steps.length) lines.push("解决步骤：", ...a.steps);
   return lines.join("\n");
 }
+
+/** 判断「确认后树又改过」用：只看会进结论的内容，节点位置、备注之类的改动不算 */
+export const analysisKey = (a) => JSON.stringify([a.rootCauses, a.steps, a.solution]);
+
+/**
+ * 确认：根因下待做 / 进行中的对策标成已完成，记下确认前的样子（撤回用）。
+ * item 是确认那一刻的事项（ItemView），没关联事项时为 null
+ */
+export function confirmSolution(tree, { item, feishu, now }) {
+  const roots = [...rootCauses(tree)];
+  const actionPrev = {};
+  let t = tree;
+  for (const id of roots) {
+    for (const a of actionsUnder(t, id)) {
+      const st = a.actionStatus ?? "todo";
+      if (st !== "todo" && st !== "doing") continue;
+      actionPrev[a.id] = st;
+      t = updateNode(t, a.id, { actionStatus: "done" });
+    }
+  }
+  const analysis = buildAnalysis(t);
+  return {
+    tree: {
+      ...t,
+      confirmation: {
+        at: now,
+        key: analysisKey(analysis),
+        item: item ? { key: item.key, closed: item.closed, resolution: item.resolution ?? null } : null,
+        actionPrev,
+        feishu: !!feishu,
+      },
+    },
+    analysis,
+  };
+}
+
+/** 撤回：对策状态改回确认前（期间被删的对策跳过），拿掉确认记录 */
+export function withdrawSolution(tree) {
+  const c = tree.confirmation;
+  if (!c) return tree;
+  let t = tree;
+  for (const [id, st] of Object.entries(c.actionPrev ?? {})) {
+    if (t.nodes[id]) t = updateNode(t, id, { actionStatus: st });
+  }
+  const { confirmation: _drop, ...rest } = t;
+  return rest;
+}
+
+/** 确认过、之后树又改得让结论不一样了 */
+export const isStale = (tree) => !!tree.confirmation && tree.confirmation.key !== analysisKey(buildAnalysis(tree));
 
 /** 对策统计：共几条、完成几条、过了截止日还没做完的几条。today 是 YYYY-MM-DD */
 export function actionStats(tree, today) {
@@ -575,11 +634,20 @@ export function onload(api) {
     return tree;
   };
 
+  /** 真的删。确认在调用方（ConfirmDialog）做 */
   const deleteTree = (tree) => {
-    if (!window.confirm(`删除故障树「${treeTitle(tree)}」？关联的事项不受影响。`)) return;
     setStore({ ...state.store, trees: state.store.trees.filter((t) => t.id !== tree.id) });
     if (state.activeTree === tree.id) state.activeTree = null;
     notify();
+  };
+
+  /**
+   * 标签上的 × 只是把这棵树从标签栏收起来，树还在，「列表」里点一下就回来。
+   * 记在树上（tabClosed），下次打开应用还是收着的；不进撤销栈 —— 关个标签不该占一步撤销
+   */
+  const setTabOpen = (treeId, open) => {
+    const trees = state.store.trees.map((t) => (t.id === treeId ? { ...t, tabClosed: !open || undefined } : t));
+    setStore({ ...state.store, trees }, { record: false });
   };
 
   void api.storage
@@ -609,7 +677,8 @@ export function onload(api) {
       const existing = treeWithTop(itemRef(item), project?.id);
       if (existing) {
         state.activeTree = existing.id;
-        notify();
+        if (existing.tabClosed) setTabOpen(existing.id, true);
+        else notify();
       } else {
         createTree(item.title, itemRef(item), item.day);
       }
@@ -968,7 +1037,7 @@ export function onload(api) {
       h(
         "div",
         { className: "ft-keys" },
-        "Tab 子原因 · ↵ 同级 · 空格 改名 · ⌫ 删除 · ⌥←→ 调顺序 · ⌘Z 撤销 · 拖空白处平移 · ⌘ + 滚轮缩放",
+        "Tab 子事件 · ↵ 同级 · 空格 改名 · ⌫ 删除 · ⌥←→ 调顺序 · ⌘Z 撤销 · 拖空白处平移 · ⌘ + 滚轮缩放",
       ),
     );
   }
@@ -1031,8 +1100,11 @@ export function onload(api) {
         rootCause &&
           h(
             "span",
-            { className: `ft-node-root${n.resolvedAt ? " ft-node-root-done" : ""}`, title: n.resolvedAt ? "根因，已写下解决步骤" : "已确认、拆到底，并且在成立的因果链上" },
-            n.resolvedAt ? "根因 ✓" : "根因",
+            {
+              className: `ft-node-root${tree.confirmation ? " ft-node-root-done" : ""}`,
+              title: tree.confirmation ? "根因，解决方案已确认" : "已确认的原因，下面没有更深的成立原因",
+            },
+            tree.confirmation ? "根因 ✓" : "根因",
           ),
         n.itemRef && h("span", { className: "ft-node-link", title: "关联了一条事项" }, "事项"),
         h("span", { className: "ft-grow" }),
@@ -1055,14 +1127,14 @@ export function onload(api) {
             value: n.label,
             className: "ft-node-edit",
             autoFocus: true,
-            placeholder: action ? "要做什么？" : top ? "不希望发生的那件事" : "这个原因是什么？",
+            placeholder: action ? "要做什么？" : top ? "不希望发生的那件事" : "这个事件是什么？",
             onCommit: (label) => ops.update(n.id, { label }),
             rows: 2,
           })
         : h(
             "div",
             { className: `ft-node-label${n.label ? "" : " ft-empty"}` },
-            n.label || (action ? "双击写下要做什么…" : top ? "写下顶事件…" : "双击写下这个原因…"),
+            n.label || (action ? "双击写下要做什么…" : top ? "写下顶事件…" : "双击写下这个事件…"),
           ),
       editing && h(EditCloser, { onDone: () => setEditing(null) }),
       selected &&
@@ -1073,11 +1145,11 @@ export function onload(api) {
           rootCause &&
             h(
               "button",
-              { className: "ft-tool-resolve", title: "写下解决步骤和方案，关闭事项、同步到飞书", onClick: () => ops.resolve(n.id) },
-              n.resolvedAt ? "解决方案…" : "解决根因…",
+              { className: "ft-tool-resolve", title: "看一眼根因、排查过程和对策，确认后关闭事项", onClick: () => ops.resolve() },
+              tree.confirmation ? "解决方案…" : "确认解决方案…",
             ),
-          !action && h("button", { title: "往下拆一层（Tab）", onClick: () => ops.addChild(n.id) }, "＋ 子原因"),
-          !top && h("button", { title: action ? "再加一条对策（↵）" : "加一个并列的原因（↵）", onClick: () => ops.addSibling(n.id) }, "＋ 同级"),
+          !action && h("button", { title: "往下拆一层：下一个要排查的事件（Tab）", onClick: () => ops.addChild(n.id) }, "＋ 子事件"),
+          !top && h("button", { title: action ? "再加一条对策（↵）" : "加一个并列的事件（↵）", onClick: () => ops.addSibling(n.id) }, "＋ 同级"),
           !action &&
             h(
               "button",
@@ -1089,7 +1161,7 @@ export function onload(api) {
               items: candidates,
               className: "ft-tool-pick",
               placeholder: "＋ 从事项",
-              title: "挑一条事项，作为这个事件的子原因",
+              title: "挑一条事项，作为这个事件的子事件",
               onPick: (it) => ops.addChild(n.id, { label: it.title, itemRef: itemRef(it), at: it.day }),
             }),
           !top && h("button", { className: "ft-danger", title: "删掉这个事件和它下面的整枝（⌫）", onClick: () => ops.remove(n.id) }, "删除"),
@@ -1156,7 +1228,7 @@ export function onload(api) {
             rows: 1,
             grow: true,
             className: "ft-title-input",
-            placeholder: isAction(n) ? "要做什么？" : n.kind === "top" ? "不希望发生的那件事" : "这个原因是什么？",
+            placeholder: isAction(n) ? "要做什么？" : n.kind === "top" ? "不希望发生的那件事" : "这个事件是什么？",
             onCommit: (label) => ops.update(n.id, { label }),
           }),
           h(
@@ -1257,16 +1329,7 @@ export function onload(api) {
                   ],
                 }),
               ),
-            roots.has(n.id) &&
-              h(
-                Prop,
-                { label: "根因" },
-                h(
-                  "button",
-                  { className: "ft-btn ft-resolve-btn", onClick: () => ops.resolve(n.id) },
-                  n.resolvedAt ? "查看 / 修改解决方案…" : "写下解决步骤…",
-                ),
-              ),
+
             h(
               Prop,
               { label: "时间" },
@@ -1342,13 +1405,7 @@ export function onload(api) {
             h("span", null, `排除 ${counts.ruled}`),
             h("span", null, `待验证 ${counts.open}`),
           ),
-        tree.solution &&
-          h(
-            "div",
-            { className: "ft-solution", title: "在根因的「解决根因…」里写的" },
-            h("span", { className: "ft-solution-k" }, "解决方案"),
-            tree.solution,
-          ),
+        roots.size > 0 && h(SolutionCard, { tree, roots, ops }),
         acts.total > 0 &&
           h(
             "div",
@@ -1410,6 +1467,41 @@ export function onload(api) {
         h(Legend, { kind: "basic", name: "基本事件", text: "拆到底了，可以直接验证" }),
         h(Legend, { kind: "undeveloped", name: "未展开事件", text: "暂不往下拆：信息不够或不值得" }),
         h(Legend, { kind: "action", name: "对策", text: "处理措施，不参与推导" }),
+      ),
+    );
+  }
+
+  /**
+   * 右栏「分析」里的解决方案卡：有根因就出现。
+   * 没确认 → 「确认解决方案…」；确认过 → 日期、对策、撤回；之后树又改过 → 「重新确认…」
+   */
+  function SolutionCard({ tree, roots, ops }) {
+    const c = tree.confirmation;
+    const stale = isStale(tree);
+    const actions = [...roots].flatMap((id) => actionsUnder(tree, id).filter((a) => a.actionStatus !== "ineffective"));
+    return h(
+      "div",
+      { className: `ft-solution${c ? " ft-solution-done" : ""}` },
+      h(
+        "div",
+        { className: "ft-solution-k" },
+        c ? `解决方案已确认 · ${shortDay(localDay(new Date(c.at)))}` : `${roots.size} 个根因 · ${actions.length} 条对策`,
+      ),
+      actions.length > 0
+        ? h(
+            "ol",
+            { className: "ft-solution-list" },
+            actions.map((a) => h("li", { key: a.id }, a.label || "（未填写）")),
+          )
+        : h("div", { className: "ft-dim" }, "根因下还没有对策：确认时方案写「未制定」"),
+      stale && h("div", { className: "ft-solution-stale" }, "确认后树又改过，事项里的结论还是旧的"),
+      h(
+        "div",
+        { className: "ft-solution-btns" },
+        (!c || stale) &&
+          h("button", { className: "ft-btn ft-primary", onClick: () => ops.resolve() }, c ? "重新确认…" : "确认解决方案…"),
+        c && !stale && h("button", { className: "ft-btn", onClick: () => ops.resolve() }, "查看"),
+        c && h("button", { className: "ft-btn", onClick: () => ops.withdraw() }, "撤回"),
       ),
     );
   }
@@ -1494,36 +1586,8 @@ export function onload(api) {
 
   /* ---------------- 整页 ---------------- */
 
-  /**
-   * 确认根因 → 写下解决步骤和方案 → 关闭顶事件那条事项 →（有飞书插件时）同步到飞书。
-   *
-   * 步骤就是根因下的「对策」节点：弹窗里改的和树上看到的是同一份，写完它们都标成已完成。
-   * 事项的结论由 resolutionText 合成；飞书拿到的是结构化的 buildAnalysis，
-   * 由那边的 Agent 对着表格字段决定拆进哪几列。
-   */
-  function ResolveDialog({ tree, rootId, topItem, onClose, onDone }) {
-    const root = tree.nodes[rootId];
-    const [steps, setSteps] = useState(() => {
-      const old = actionsUnder(tree, rootId).map((a) => a.label);
-      return old.length ? old : [""];
-    });
-    const [solution, setSolution] = useState(tree.solution ?? "");
-    const canClose = !!topItem;
-    const hasFeishu = api.commands.has("feishu-sync.push");
-    const [closeIt, setCloseIt] = useState(canClose);
-    const [toFeishu, setToFeishu] = useState(canClose && hasFeishu);
-    const [busy, setBusy] = useState(false);
-    const [error, setError] = useState(null);
-    const listRef = useRef(null);
-
-    // 别的根因也会进结论：一棵树可能有几条成立的因果链
-    const others = [...rootCauses(tree)].filter((id) => id !== rootId);
-    const chain = causeChain(tree, rootId);
-    const filled = steps.map((x) => x.trim()).filter(Boolean);
-    const preview = resolutionText(
-      buildAnalysis(applyResolution(tree, rootId, { steps, solution, day: localDay(), now: "" })),
-    );
-
+  /** Esc 关掉弹窗（忙的时候不关） */
+  function useEscape(onClose, busy) {
     useEffect(() => {
       const onKey = (e) => {
         if (e.key !== "Escape" || busy) return;
@@ -1533,31 +1597,49 @@ export function onload(api) {
       window.addEventListener("keydown", onKey, true);
       return () => window.removeEventListener("keydown", onKey, true);
     }, [busy]);
+  }
 
-    const focusStep = (i) =>
-      setTimeout(() => listRef.current?.querySelectorAll("input")[i]?.focus(), 0);
-    const setStep = (i, v) => setSteps((xs) => xs.map((x, j) => (j === i ? v : x)));
-    const addStep = (after) => {
-      setSteps((xs) => [...xs.slice(0, after + 1), "", ...xs.slice(after + 1)]);
-      focusStep(after + 1);
-    };
-    const dropStep = (i) => {
-      setSteps((xs) => (xs.length === 1 ? [""] : xs.filter((_, j) => j !== i)));
-      focusStep(Math.max(0, i - 1));
-    };
+  /**
+   * 确认解决方案。**不让人输入任何东西**：根因、因果链、排查步骤、对策都已经在树上了，
+   * 这里只是摆出来看一眼，然后关闭事项、（可选）同步飞书。
+   *
+   * 事项结论由 resolutionText 合成；飞书拿到的是结构化的 buildAnalysis，
+   * 由那边的 Agent 对着表格字段决定拆进哪几列。确认前事项的样子记在 tree.confirmation，撤回时恢复
+   */
+  function ResolveDialog({ tree, topItem, onClose, onDone }) {
+    const canClose = !!topItem;
+    const hasFeishu = api.commands.has("feishu-sync.push");
+    const [closeIt, setCloseIt] = useState(canClose);
+    const [toFeishu, setToFeishu] = useState(canClose && hasFeishu);
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState(null);
+    useEscape(onClose, busy);
+
+    // 摆出来的是「确认之后」的样子：待做 / 进行中的对策会被标成已完成
+    const preview = useMemo(
+      () => confirmSolution(withdrawSolution(tree), { item: null, feishu: false, now: "" }),
+      [tree],
+    );
+    const a = preview.analysis;
+    const flips = Object.keys(preview.tree.confirmation.actionPrev).length;
+    const again = !!tree.confirmation;
 
     const submit = async () => {
-      if (busy || (filled.length === 0 && !solution.trim())) return;
+      if (busy) return;
       setBusy(true);
       setError(null);
       const report = [];
       try {
-        mutateTree(tree.id, (t) =>
-          applyResolution(t, rootId, { steps, solution, day: localDay(), now: new Date().toISOString() }),
-        );
-        report.push(`${filled.length} 个步骤已记为对策`);
-        const fresh = state.store.trees.find((t) => t.id === tree.id) ?? tree;
-        const analysis = buildAnalysis(fresh);
+        // 重新确认：先回到确认前（对策状态、事项快照都以第一次确认前为准）
+        const base = withdrawSolution(state.store.trees.find((t) => t.id === tree.id) ?? tree);
+        const firstItem = tree.confirmation?.item ?? (topItem ? { key: topItem.key, closed: topItem.closed, resolution: topItem.resolution } : null);
+        const { tree: next, analysis } = confirmSolution(base, {
+          item: closeIt ? firstItem : null,
+          feishu: toFeishu,
+          now: new Date().toISOString(),
+        });
+        mutateTree(tree.id, () => next);
+        if (flips) report.push(`${flips} 条对策标为已完成`);
         if (closeIt && topItem) {
           await api.data.items.close(topItem.key, resolutionText(analysis));
           report.push(topItem.closed ? "事项结论已更新" : "事项已关闭");
@@ -1566,13 +1648,16 @@ export function onload(api) {
           const r = await api.commands.run("feishu-sync.push", { key: topItem.key, analysis, sync: true });
           report.push(r?.syncing ? "正在后台同步到飞书" : `已加入飞书同步队列${r?.reason ? `（${r.reason}）` : ""}`);
         }
-        onDone(report.join(" · "));
+        onDone(report.join(" · ") || "解决方案已确认");
       } catch (e) {
-        // 树上的改动已经落下（撤销可回），事项或飞书那一步失败就留在弹窗里让人看见
+        // 树上的确认已经落下，事项或飞书那一步失败：留在弹窗里让人看见，可以再点一次
         setError(e?.message ?? String(e));
         setBusy(false);
       }
     };
+
+    const Block = ({ label, children }) =>
+      h("section", { className: "ft-sum" }, h("div", { className: "ft-sum-k" }, label), children);
 
     return h(
       "div",
@@ -1582,7 +1667,7 @@ export function onload(api) {
         {
           className: "ft-modal ft-resolve",
           role: "dialog",
-          "aria-label": "确认根因并解决",
+          "aria-label": "确认解决方案",
           onPointerDown: (e) => e.stopPropagation(),
           onKeyDown: (e) => {
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -1591,71 +1676,52 @@ export function onload(api) {
             }
           },
         },
+        h("header", { className: "ft-resolve-head" }, h("h3", null, a.problem)),
+        h("p", { className: "ft-resolve-note" }, again ? "按现在的树重新确认，事项结论会换成新的。" : "以下内容都来自树上，确认后写进事项结论。"),
+
         h(
-          "header",
-          { className: "ft-resolve-head" },
-          h("span", { className: "ft-node-root" }, "根因"),
-          h("h3", null, root.label || "（未填写）"),
-        ),
-        h(
-          "ol",
-          { className: "ft-chain", "aria-label": "因果链" },
-          chain.map((label, i) =>
-            h(
-              "li",
-              { key: i, className: i === 0 ? "ft-chain-top" : i === chain.length - 1 ? "ft-chain-root" : "" },
-              label,
-            ),
-          ),
-        ),
-        others.length > 0 &&
+          Block,
+          { label: "根因" },
           h(
-            "p",
-            { className: "ft-resolve-note" },
-            `这棵树还有 ${others.length} 个根因（${others.map((id) => tree.nodes[id].label || "未填写").join("、")}），它们也会写进结论。`,
+            "div",
+            { className: "ft-sum-roots" },
+            a.rootCauses.map((r, i) => h("span", { key: i, className: "ft-node-root ft-sum-root" }, r.label)),
           ),
-
-        h("div", { className: "ft-resolve-label" }, "解决步骤", h("span", null, "↵ 加下一步 · 每步会挂成一个已完成的对策")),
+        ),
         h(
-          "ol",
-          { className: "ft-steps", ref: listRef },
-          steps.map((x, i) =>
+          Block,
+          { label: "因果链" },
+          a.rootCauses.map((r, i) =>
             h(
-              "li",
-              { key: i },
-              h("span", { className: "ft-step-n" }, i + 1),
-              h("input", {
-                className: "ft-input ft-step-input",
-                value: x,
-                autoFocus: i === 0 && !x,
-                placeholder: i === 0 ? "第一步做了什么" : "下一步",
-                onChange: (e) => setStep(i, e.target.value),
-                onKeyDown: (e) => {
-                  e.stopPropagation();
-                  if (e.key === "Enter" && !e.metaKey && !e.ctrlKey && !e.nativeEvent.isComposing) {
-                    e.preventDefault();
-                    addStep(i);
-                  } else if (e.key === "Backspace" && !x && steps.length > 1) {
-                    e.preventDefault();
-                    dropStep(i);
-                  }
-                },
-              }),
-              h("button", { className: "ft-x", title: "删掉这一步", "aria-label": `删掉第 ${i + 1} 步`, onClick: () => dropStep(i) }, "×"),
+              "ol",
+              { key: i, className: "ft-chain", "aria-label": "因果链" },
+              r.chain.map((label, j) =>
+                h(
+                  "li",
+                  { key: j, className: j === 0 ? "ft-chain-top" : j === r.chain.length - 1 ? "ft-chain-root" : "" },
+                  label,
+                ),
+              ),
             ),
           ),
         ),
-        h("button", { className: "ft-btn ft-step-add", onClick: () => addStep(steps.length - 1) }, "＋ 加一步"),
-
-        h("div", { className: "ft-resolve-label" }, "解决方案", h("span", null, "一句话：最后是怎么解决的")),
-        h("textarea", {
-          className: "ft-input",
-          rows: 2,
-          value: solution,
-          placeholder: "例如：建立图纸版本发放流程，旧版本统一回收",
-          onChange: (e) => setSolution(e.target.value),
-          onKeyDown: (e) => e.stopPropagation(),
-        }),
+        h(
+          Block,
+          { label: "解决方案" },
+          a.solution.length
+            ? h(
+                "ol",
+                { className: "ft-sum-sol" },
+                a.solution.map((x, i) => h("li", { key: i }, x)),
+              )
+            : h("div", { className: "ft-dim" }, "未制定 —— 根因下还没有对策。可以先确认，之后加了对策再「重新确认」"),
+          flips > 0 && h("div", { className: "ft-dim ft-sum-flip" }, `确认后，其中 ${flips} 条待做 / 进行中的对策标为已完成`),
+        ),
+        h(
+          Block,
+          { label: "解决步骤（排查过程）" },
+          h("pre", { className: "ft-sum-steps" }, a.steps.join("\n") || "（树上还没有事件）"),
+        ),
 
         h(
           "div",
@@ -1666,40 +1732,49 @@ export function onload(api) {
             h("input", { type: "checkbox", checked: closeIt, disabled: !canClose, onChange: (e) => setCloseIt(e.target.checked) }),
             canClose
               ? h(React.Fragment, null, topItem.closed ? "更新事项「" : "关闭事项「", h("b", null, topItem.title), topItem.closed ? "」的结论" : "」，标为已完成")
-              : "顶事件没有关联事项，只写进故障树",
+              : "顶事件没有关联事项，只在故障树里记为已确认",
           ),
           hasFeishu &&
             h(
               "label",
               { className: canClose ? "" : "ft-off" },
               h("input", { type: "checkbox", checked: toFeishu, disabled: !canClose, onChange: (e) => setToFeishu(e.target.checked) }),
-              "同步到飞书：问题、根因、解决步骤和方案",
+              "同步到飞书：问题、根因、因果链、解决步骤和方案",
             ),
         ),
-
-        preview &&
-          h(
-            "details",
-            { className: "ft-resolve-preview" },
-            h("summary", null, "写进事项的结论"),
-            h("pre", null, preview),
-          ),
         error && h("div", { className: "ft-resolve-err" }, error),
-
         h(
           "footer",
           { className: "ft-resolve-foot" },
-          h("span", { className: "ft-dim" }, "⌘↵ 确认"),
-          h("button", { className: "ft-btn", onClick: onClose, disabled: busy }, "稍后再说"),
+          h("span", { className: "ft-dim" }, "⌘↵ 确认 · 之后可以在右栏撤回"),
+          h("button", { className: "ft-btn", onClick: onClose, disabled: busy }, "取消"),
           h(
             "button",
-            {
-              className: "ft-btn ft-primary",
-              onClick: () => void submit(),
-              disabled: busy || (filled.length === 0 && !solution.trim()),
-            },
-            busy ? "处理中…" : "确认并解决",
+            { className: "ft-btn ft-primary", onClick: () => void submit(), disabled: busy, autoFocus: true },
+            busy ? "处理中…" : again ? "重新确认" : "确认",
           ),
+        ),
+      ),
+    );
+  }
+
+  /** 插件自己的确认框：桌面应用的 WebView 里 window.confirm 不一定弹得出来 */
+  function ConfirmDialog({ title, body, okLabel, danger, onOk, onCancel }) {
+    useEscape(onCancel, false);
+    return h(
+      "div",
+      { className: "ft-modal-mask", onPointerDown: onCancel },
+      h(
+        "div",
+        { className: "ft-modal ft-confirm", role: "alertdialog", "aria-label": title, onPointerDown: (e) => e.stopPropagation() },
+        h("h3", null, title),
+        body && h("p", null, body),
+        h(
+          "footer",
+          { className: "ft-resolve-foot" },
+          h("span", { className: "ft-dim" }),
+          h("button", { className: "ft-btn", onClick: onCancel }, "取消"),
+          h("button", { className: `ft-btn ${danger ? "ft-danger-solid" : "ft-primary"}`, onClick: onOk, autoFocus: true }, okLabel),
         ),
       ),
     );
@@ -1716,20 +1791,23 @@ export function onload(api) {
     const [highlight, setHighlight] = useState(null);
     const [copied, setCopied] = useState(false);
     const [listOpen, setListOpen] = useState(false);
-    /** 正在写解决方案的根因 id */
-    const [resolving, setResolving] = useState(null);
+    /** 「确认解决方案」弹窗开着 */
+    const [resolving, setResolving] = useState(false);
     const [doneMsg, setDoneMsg] = useState(null);
+    /** 要确认的危险动作：{ kind: "delete", tree } | { kind: "withdraw" } */
+    const [ask, setAsk] = useState(null);
 
     const project = api.data.project();
     const trees = project ? treesOf(project.id) : [];
-    const tree = trees.find((t) => t.id === state.activeTree) ?? trees[0] ?? null;
+    const tabs = trees.filter((t) => !t.tabClosed);
+    const tree = tabs.find((t) => t.id === state.activeTree) ?? tabs[0] ?? null;
 
     // 换树时清掉选中
     useEffect(() => {
       setSelected(tree ? tree.root : null);
       setEditing(null);
       setHighlight(null);
-      setResolving(null);
+      setResolving(false);
       setDoneMsg(null);
     }, [tree?.id]);
     // 选中的节点被删 / 被撤销掉了
@@ -1757,16 +1835,9 @@ export function onload(api) {
         addChild: (nid, init) => addWith((t) => addChild(t, nid, { at: localDay(), ...init })),
         addSibling: (nid, init) => addWith((t) => addSibling(t, nid, { at: localDay(), ...init })),
         addAction: (nid) => addWith((t) => addChild(t, nid, { at: localDay(), role: "action" })),
-        update: (nid, patch) => {
-          const before = current();
-          mutateTree(id, (t) => updateNode(t, nid, patch));
-          // 刚标成已确认、它（或它让别的叶子）因此成了根因、还没写过解决方案：弹窗
-          if (patch.status !== "confirmed" || !before) return;
-          const after = current();
-          const fresh = newRootCauses(before, after).filter((r) => !after.nodes[r].resolvedAt);
-          if (fresh.length) setResolving(fresh.includes(nid) ? nid : fresh[0]);
-        },
-        resolve: (nid) => setResolving(nid),
+        update: (nid, patch) => mutateTree(id, (t) => updateNode(t, nid, patch)),
+        resolve: () => setResolving(true),
+        withdraw: () => setAsk({ kind: "withdraw" }),
         move: (nid, d) => mutateTree(id, (t) => moveNode(t, nid, d)),
         remove: (nid) => {
           const t = current();
@@ -1792,7 +1863,42 @@ export function onload(api) {
 
     const open = (id) => {
       state.activeTree = id;
-      notify();
+      if (trees.find((t) => t.id === id)?.tabClosed) setTabOpen(id, true);
+      else notify();
+    };
+    const closeTab = (t) => {
+      if (state.activeTree === t.id || tree?.id === t.id) {
+        const i = tabs.findIndex((x) => x.id === t.id);
+        state.activeTree = (tabs[i + 1] ?? tabs[i - 1])?.id ?? null;
+      }
+      setTabOpen(t.id, false);
+    };
+
+    /**
+     * 撤回：树上的对策状态改回去；事项恢复成确认前（原来没关 → 重开；原来就关着 → 结论改回原样）；
+     * 飞书不动，队列里那条会因为事项变了而显示「有变更」，要不要同步由人决定
+     */
+    const withdraw = async () => {
+      const t = tree;
+      const c = t?.confirmation;
+      setAsk(null);
+      if (!c) return;
+      mutateTree(t.id, withdrawSolution);
+      const report = ["解决方案已撤回"];
+      try {
+        if (c.item) {
+          if (c.item.closed) await api.data.items.close(c.item.key, c.item.resolution ?? "");
+          else await api.data.items.reopen(c.item.key);
+          report.push(c.item.closed ? "事项结论已改回原样" : "事项已重新打开");
+        }
+        if (c.feishu && api.commands.has("feishu-sync.push")) {
+          await api.commands.run("feishu-sync.push", { key: c.item?.key, analysis: null, sync: false });
+          report.push("飞书队列里标为有变更，没有自动同步");
+        }
+      } catch (e) {
+        report.push(`事项没能恢复：${e?.message ?? e}`);
+      }
+      setDoneMsg(report.join(" · "));
     };
 
     const header = h(
@@ -1814,7 +1920,7 @@ export function onload(api) {
       h(
         "div",
         { className: "ft-tabs", role: "tablist" },
-        trees.map((t) => {
+        tabs.map((t) => {
           const ev = evaluate(t)[t.root];
           const on = tree?.id === t.id;
           return h(
@@ -1835,11 +1941,11 @@ export function onload(api) {
               "button",
               {
                 className: "ft-tab-x",
-                title: "删除这棵树",
-                "aria-label": `删除「${treeTitle(t)}」`,
+                title: "关闭这个标签（树还在，「列表」里能再打开）",
+                "aria-label": `关闭「${treeTitle(t)}」标签`,
                 onClick: (e) => {
                   e.stopPropagation();
-                  deleteTree(t);
+                  closeTab(t);
                 },
               },
               "×",
@@ -1887,12 +1993,55 @@ export function onload(api) {
             open(id);
             setListOpen(false);
           },
-          onDelete: deleteTree,
+          onDelete: (t) => setAsk({ kind: "delete", tree: t }),
           onClose: () => setListOpen(false),
         }),
     );
 
+    const askDialog =
+      ask?.kind === "delete"
+        ? h(ConfirmDialog, {
+            title: `删除故障树「${treeTitle(ask.tree)}」？`,
+            body: "整棵树和它上面的对策都会删掉，不能撤销。关联的事项不受影响。只是想收起来的话，点标签上的 ×。",
+            okLabel: "删除",
+            danger: true,
+            onOk: () => {
+              deleteTree(ask.tree);
+              setAsk(null);
+            },
+            onCancel: () => setAsk(null),
+          })
+        : ask?.kind === "withdraw"
+          ? h(ConfirmDialog, {
+              title: "撤回解决方案？",
+              body: tree?.confirmation?.item
+                ? tree.confirmation.item.closed
+                  ? "对策状态改回确认前；事项的结论改回确认前的那句。飞书上的记录不动。"
+                  : `对策状态改回确认前；事项重新打开、清掉结论${tree.confirmation.item.key.startsWith("blocker:") ? "（阻碍不会重新打开，只清结论）" : ""}。飞书上的记录不动。`
+                : "对策状态改回确认前。",
+              okLabel: "撤回",
+              onOk: () => void withdraw(),
+              onCancel: () => setAsk(null),
+            })
+          : null;
+
     if (!tree) {
+      if (trees.length > 0) {
+        // 有树，只是标签都关了
+        return h(
+          "div",
+          { className: "ft-root" },
+          header,
+          h(
+            "div",
+            { className: "ft-empty-state" },
+            h("h2", null, "标签都关掉了"),
+            h("p", null, `这个项目有 ${trees.length} 棵故障树，从「列表」里打开一棵接着看。`),
+            h("button", { className: "ft-btn ft-primary", onClick: () => setListOpen(true) }, "打开列表"),
+          ),
+          askDialog,
+        );
+      }
       return h(
         "div",
         { className: "ft-root" },
@@ -1971,18 +2120,17 @@ export function onload(api) {
           h("button", { className: "ft-x", "aria-label": "关闭提示", onClick: () => setDoneMsg(null) }, "×"),
         ),
       resolving &&
-        tree.nodes[resolving] &&
+        rootCauses(tree).size > 0 &&
         h(ResolveDialog, {
-          key: resolving,
           tree,
-          rootId: resolving,
           topItem,
-          onClose: () => setResolving(null),
+          onClose: () => setResolving(false),
           onDone: (msg) => {
-            setResolving(null);
+            setResolving(false);
             setDoneMsg(msg);
           },
         }),
+      askDialog,
     );
   }
 

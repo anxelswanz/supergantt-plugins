@@ -30,9 +30,11 @@ const ITEM = {
 const ANALYSIS = {
   source: "fault-tree",
   problem: "夹具尺寸不对",
-  rootCauses: [{ label: "图纸版本旧", chain: ["夹具尺寸不对", "加工依据错", "图纸版本旧"] }],
-  steps: ["收回旧图纸", "按新版重做夹具"],
-  solution: "建立图纸版本发放流程",
+  rootCauses: [
+    { label: "图纸版本旧", chain: ["夹具尺寸不对", "加工依据错", "图纸版本旧"], actions: ["建立图纸版本发放流程"] },
+  ],
+  steps: ["1. 加工依据错 — 已确认 · 2026-10-21", "   1.1 图纸版本旧 — 已确认（根因） · 2026-10-22"],
+  solution: ["建立图纸版本发放流程"],
 };
 
 describe("setAnalysis", () => {

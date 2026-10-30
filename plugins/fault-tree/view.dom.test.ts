@@ -41,13 +41,14 @@ function setupWith(files: Map<string, string>, { feishu = false }: SetupOpts = {
   const badges: { render: (i: unknown) => { text: string } | null }[] = [];
   const setActiveView = vi.fn();
   const close = vi.fn(async () => {});
+  const reopen = vi.fn(async () => {});
   const run = vi.fn(async () => ({ queued: true, syncing: true, reason: null }));
   const api = {
     react: React,
     log: () => {},
     data: {
       project: () => ({ id: 1, name: "P" }),
-      items: { list: () => [ITEM], subscribe: () => () => {}, close },
+      items: { list: () => [ITEM], subscribe: () => () => {}, close, reopen },
     },
     commands: { register: () => ({ dispose() {} }), has: (id: string) => feishu && id === "feishu-sync.push", run },
     act: { setActiveView },
@@ -60,7 +61,7 @@ function setupWith(files: Map<string, string>, { feishu = false }: SetupOpts = {
     },
   };
   onload(api);
-  return { View, files, action: actions[0], badge: badges[0], setActiveView, close, run };
+  return { View, files, action: actions[0], badge: badges[0], setActiveView, close, reopen, run };
 }
 
 afterEach(cleanup);
@@ -109,10 +110,9 @@ describe("故障树", () => {
     fireEvent.click(document.querySelector('[data-node="n2"]')!);
     fireEvent.click(screen.getByRole("radio", { name: "已确认" }));
     expect(screen.getByText(/因果链成立/)).toBeTruthy();
-    // 它因此成了根因：弹出「确认根因」，先不写
-    expect(screen.getByRole("dialog", { name: "确认根因并解决" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "稍后再说" }));
+    // 成了根因：不自动弹窗，右栏出现「确认解决方案…」
     expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getAllByRole("button", { name: "确认解决方案…" }).length).toBeGreaterThan(0);
     expect(document.querySelector('[data-node="n1"]')!.className).toContain("ft-hot");
 
     // 撤销 → 回到待验证
@@ -132,7 +132,7 @@ describe("故障树", () => {
     expect(screen.getByLabelText("故障树画布")).toBeTruthy();
   });
 
-  it("列表里能看到全部树；标签上的红叉删树", async () => {
+  it("列表里能看到全部树；列表里删树要先确认", async () => {
     const { View, action } = setup();
     await act(async () => {});
     await act(async () => action.run(ITEM));
@@ -148,11 +148,38 @@ describe("故障树", () => {
     expect(screen.getByText("没有符合条件的故障树")).toBeTruthy();
     fireEvent.keyDown(document, { key: "Escape" });
 
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const openList = () => {
+      if (!screen.queryByRole("dialog", { name: "故障树列表" })) fireEvent.click(screen.getByRole("button", { name: /列表/ }));
+    };
+    openList();
     fireEvent.click(screen.getByRole("button", { name: "删除「夹具尺寸不对」" }));
-    expect(confirm).toHaveBeenCalled();
+    const ask = screen.getByRole("alertdialog", { name: /删除故障树「夹具尺寸不对」/ });
+    // 取消：还在
+    fireEvent.click(within(ask).getByRole("button", { name: "取消" }));
+    expect(screen.getByRole("tab", { name: /夹具尺寸不对/ })).toBeTruthy();
+
+    openList();
+    fireEvent.click(screen.getByRole("button", { name: "删除「夹具尺寸不对」" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "删除" }));
     expect(screen.queryByRole("tab", { name: /夹具尺寸不对/ })).toBeNull();
-    confirm.mockRestore();
+  });
+
+  it("标签上的 × 只是收起，树还在，从列表能再打开", async () => {
+    const { View, action, files } = setup();
+    await act(async () => {});
+    await act(async () => action.run(ITEM));
+    render(React.createElement(View));
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭「夹具尺寸不对」标签" }));
+    expect(screen.queryByRole("tab", { name: /夹具尺寸不对/ })).toBeNull();
+    expect(screen.getByText("标签都关掉了")).toBeTruthy();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "打开列表" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "故障树列表" })).getByText("夹具尺寸不对"));
+    expect(screen.getByRole("tab", { name: /夹具尺寸不对/ })).toBeTruthy();
+    // 收起记在树上，下次打开还是那样
+    await waitFor(() => expect(JSON.parse(files.get("trees.json")!).trees).toHaveLength(1), { timeout: 2000 });
   });
 
   it("卸载前没落盘的改动立刻写掉，重新加载读回同一份", async () => {
@@ -206,8 +233,9 @@ describe("故障树", () => {
   });
 });
 
-describe("确认根因 → 解决 → 关闭事项 → 飞书", () => {
-  async function confirmRoot(feishu: boolean) {
+describe("确认解决方案 → 关闭事项 → 飞书 → 撤回", () => {
+  /** 夹具尺寸不对 → 加工依据错 → 图纸版本旧（确认），根因下挂一条对策 */
+  async function rooted(feishu: boolean) {
     const env = setup({ feishu });
     await act(async () => {});
     await act(async () => env.action.run(ITEM));
@@ -218,88 +246,90 @@ describe("确认根因 → 解决 → 关闭事项 → 飞书", () => {
     await type("图纸版本旧");
     fireEvent.click(document.querySelector('[data-node="n3"]')!);
     fireEvent.click(screen.getByRole("radio", { name: "已确认" }));
-    return { ...env, dialog: screen.getByRole("dialog", { name: "确认根因并解决" }) };
+    fireEvent.click(screen.getByRole("button", { name: "＋ 对策" }));
+    await type("收回旧图纸，按新版重做");
+    return env;
   }
+  const openDialog = () => {
+    // 根因节点工具条和右栏各有一个，点哪个都一样
+    fireEvent.click(screen.getAllByRole("button", { name: "确认解决方案…" })[0]);
+    return screen.getByRole("dialog", { name: "确认解决方案" });
+  };
 
-  it("写步骤和方案：步骤挂成已完成的对策，事项关闭并写结论，交给飞书同步", async () => {
-    const { dialog, close, run, files } = await confirmRoot(true);
-
-    // 因果链：顶事件 → 中间 → 根因
+  it("弹窗里没有输入框：根因、因果链、方案、排查步骤都来自树；确认后关闭事项并交给飞书", async () => {
+    const { close, run, files } = await rooted(true);
+    const dialog = openDialog();
+    expect(within(dialog).queryAllByRole("textbox")).toHaveLength(0);
     expect(within(dialog).getByRole("list", { name: "因果链" }).textContent).toBe("夹具尺寸不对加工依据错图纸版本旧");
+    expect(dialog.textContent).toContain("收回旧图纸，按新版重做");
+    expect(dialog.textContent).toMatch(/1 条待做 \/ 进行中的对策标为已完成/);
+    expect(dialog.querySelector(".ft-sum-steps")!.textContent).toMatch(/1\. 加工依据错 — 已确认 · \d{4}-\d\d-\d\d\n   1\.1 图纸版本旧 — 已确认（根因）/);
 
-    const steps = () => within(dialog).getAllByPlaceholderText(/第一步|下一步/) as HTMLInputElement[];
-    fireEvent.change(steps()[0], { target: { value: "收回旧图纸" } });
-    fireEvent.keyDown(steps()[0], { key: "Enter" });
-    expect(steps()).toHaveLength(2);
-    fireEvent.change(steps()[1], { target: { value: "按新版重做夹具" } });
-    fireEvent.change(within(dialog).getByPlaceholderText(/例如/), { target: { value: "建立图纸版本发放流程" } });
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "确认" })));
 
-    // 两个勾默认都开着
-    const boxes = within(dialog).getAllByRole("checkbox") as HTMLInputElement[];
-    expect(boxes.map((b) => b.checked)).toEqual([true, true]);
-
-    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "确认并解决" })));
-
-    expect(close).toHaveBeenCalledTimes(1);
-    const [key_, text] = close.mock.calls[0] as unknown as [string, string];
-    expect(key_).toBe("note:3");
-    expect(text).toBe(
-      [
-        "解决方案：建立图纸版本发放流程",
-        "根因：图纸版本旧",
-        "因果链：夹具尺寸不对 → 加工依据错 → 图纸版本旧",
-        "解决步骤：",
-        "1. 收回旧图纸",
-        "2. 按新版重做夹具",
-      ].join("\n"),
-    );
-
-    expect(run).toHaveBeenCalledWith("feishu-sync.push", {
-      key: "note:3",
-      sync: true,
-      analysis: {
-        source: "fault-tree",
-        problem: "夹具尺寸不对",
-        rootCauses: [{ label: "图纸版本旧", chain: ["夹具尺寸不对", "加工依据错", "图纸版本旧"] }],
-        steps: ["收回旧图纸", "按新版重做夹具"],
-        solution: "建立图纸版本发放流程",
-      },
+    const [k, text] = close.mock.calls[0] as unknown as [string, string];
+    expect(k).toBe("note:3");
+    expect(text.split("\n").slice(0, 3)).toEqual([
+      "解决方案：收回旧图纸，按新版重做",
+      "根因：图纸版本旧",
+      "因果链：夹具尺寸不对 → 加工依据错 → 图纸版本旧",
+    ]);
+    expect(run).toHaveBeenCalledWith("feishu-sync.push", expect.objectContaining({ key: "note:3", sync: true }));
+    const analysis = (run.mock.calls[0] as unknown as [string, { analysis: Record<string, unknown> }])[1].analysis;
+    expect(analysis).toMatchObject({
+      problem: "夹具尺寸不对",
+      rootCauses: [{ label: "图纸版本旧", chain: ["夹具尺寸不对", "加工依据错", "图纸版本旧"], actions: ["收回旧图纸，按新版重做"] }],
+      solution: ["收回旧图纸，按新版重做"],
     });
 
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByRole("status").textContent).toMatch(/事项已关闭.*正在后台同步到飞书/);
-    // 树上：根因下两个已完成的对策，根因打勾
+    expect(screen.getByRole("status").textContent).toMatch(/1 条对策标为已完成.*事项已关闭.*正在后台同步到飞书/);
     expect(document.querySelector('[data-node="n3"] .ft-node-root')!.textContent).toBe("根因 ✓");
+    expect(screen.getByText(/解决方案已确认/)).toBeTruthy();
     await waitFor(() => {
       const tree = JSON.parse(files.get("trees.json")!).trees[0];
-      const acts = tree.nodes.n3.children.map((c: string) => tree.nodes[c]);
-      expect(acts.map((a: { label: string; actionStatus: string }) => [a.label, a.actionStatus])).toEqual([
-        ["收回旧图纸", "done"],
-        ["按新版重做夹具", "done"],
-      ]);
-      expect(tree.solution).toBe("建立图纸版本发放流程");
+      expect(tree.nodes.n4.actionStatus).toBe("done");
+      expect(tree.confirmation.item).toEqual({ key: "note:3", closed: false, resolution: null });
     }, { timeout: 2000 });
   });
 
-  it("没有飞书插件时不出现同步选项；再打开时带出已写的步骤", async () => {
-    const { dialog, run } = await confirmRoot(false);
-    expect(within(dialog).getAllByRole("checkbox")).toHaveLength(1);
-    fireEvent.change(within(dialog).getByPlaceholderText("第一步做了什么"), { target: { value: "收回旧图纸" } });
-    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "确认并解决" })));
-    expect(run).not.toHaveBeenCalled();
+  it("撤回：先确认，再把对策改回去、事项重新打开，飞书只标有变更", async () => {
+    const { close, reopen, run } = await rooted(true);
+    const dialog = openDialog();
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "确认" })));
+    run.mockClear();
 
-    // 根因节点上的按钮再打开：步骤还在
+    fireEvent.click(screen.getByRole("button", { name: "撤回" }));
+    const ask = screen.getByRole("alertdialog", { name: "撤回解决方案？" });
+    expect(ask.textContent).toMatch(/事项重新打开/);
+    await act(async () => fireEvent.click(within(ask).getByRole("button", { name: "撤回" })));
+
+    expect(screen.getByRole("status").textContent).toMatch(/已撤回.*事项已重新打开.*没有自动同步/);
+    expect(run).toHaveBeenCalledWith("feishu-sync.push", { key: "note:3", analysis: null, sync: false });
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(reopen).toHaveBeenCalledWith("note:3");
+    expect(screen.getAllByRole("button", { name: "确认解决方案…" }).length).toBeGreaterThan(0);
+    expect(document.querySelector('[data-node="n3"] .ft-node-root')!.textContent).toBe("根因");
+  });
+
+  it("确认后又加对策：提示过时，按钮变成「重新确认…」", async () => {
+    await rooted(false);
+    const dialog = openDialog();
+    expect(within(dialog).getAllByRole("checkbox")).toHaveLength(1);
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "确认" })));
+
     fireEvent.click(document.querySelector('[data-node="n3"]')!);
-    fireEvent.click(screen.getByRole("button", { name: "解决方案…" }));
-    const again = screen.getByRole("dialog", { name: "确认根因并解决" });
-    expect((within(again).getAllByRole("textbox")[0] as HTMLInputElement).value).toBe("收回旧图纸");
+    fireEvent.click(screen.getByRole("button", { name: "＋ 对策" }));
+    await type("加一道复核");
+    expect(screen.getByText(/确认后树又改过/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "重新确认…" }));
+    expect(screen.getByRole("dialog", { name: "确认解决方案" }).textContent).toContain("加一道复核");
   });
 
   it("关闭事项失败：错误留在弹窗里", async () => {
-    const { dialog, close } = await confirmRoot(false);
+    const { close } = await rooted(false);
     close.mockRejectedValueOnce(new Error("这条事项还没分拣"));
-    fireEvent.change(within(dialog).getByPlaceholderText("第一步做了什么"), { target: { value: "x" } });
-    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "确认并解决" })));
+    const dialog = openDialog();
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "确认" })));
     expect(within(dialog).getByText("这条事项还没分拣")).toBeTruthy();
   });
 });

@@ -260,51 +260,86 @@ describe("其他", () => {
   });
 });
 
-describe("根因 → 解决", () => {
+describe("根因 → 确认解决方案", () => {
   // 顶事件 → 或门 → [图纸旧(基本), 刀具磨损(基本)]
   const base = () => {
     let t = M.newTree({ id: "t", projectId: 1, label: "夹具尺寸不对", now: "2026-10-01T00:00:00Z" });
-    t = M.addChild(t, "n1", { label: "图纸旧" }).tree;
-    t = M.addChild(t, "n1", { label: "刀具磨损" }).tree;
+    t = M.addChild(t, "n1", { label: "图纸旧", at: "2026-10-21" }).tree;
+    t = M.addChild(t, "n1", { label: "刀具磨损", at: "2026-10-22" }).tree;
     return t;
   };
+  const act = (t: ReturnType<typeof base>, parent: string, label: string, actionStatus = "todo") =>
+    M.addChild(t, parent, { label, role: "action", actionStatus }).tree;
 
-  it("newRootCauses：标已确认之后才冒出来的根因", () => {
-    const before = base();
-    const after = M.updateNode(before, "n2", { status: "confirmed" });
-    expect(M.newRootCauses(before, after)).toEqual(["n2"]);
-    expect(M.newRootCauses(after, after)).toEqual([]);
-    expect(M.causeChain(after, "n2")).toEqual(["夹具尺寸不对", "图纸旧"]);
-  });
-
-  it("applyResolution：步骤对上已有对策，多的新建、删掉的移除，都标已完成", () => {
+  it("根因只认角色是「原因」的；现象下面成立的原因接着往下找，取最深的", () => {
     let t = M.updateNode(base(), "n2", { status: "confirmed" });
-    t = M.applyResolution(t, "n2", { steps: ["收回", "重画", "  "], solution: " 版本发放流程 ", day: "2026-10-30", now: "N" });
-    expect(M.actionsUnder(t, "n2").map((a) => [a.label, a.actionStatus])).toEqual([
-      ["收回", "done"],
-      ["重画", "done"],
-    ]);
-    expect(t.nodes.n2.resolvedAt).toBe("N");
-    expect(t.solution).toBe("版本发放流程");
-    // 挂对策不改变结构：它还是根因
-    expect(M.rootCauses(t).has("n2")).toBe(true);
-
-    // 再写一次只剩一步：第二个对策被删掉
-    t = M.applyResolution(t, "n2", { steps: ["收回旧图纸"], solution: "x", day: "2026-10-30", now: "N2" });
-    expect(M.actionsUnder(t, "n2").map((a) => a.label)).toEqual(["收回旧图纸"]);
+    expect([...M.rootCauses(t)]).toEqual(["n2"]);
+    // 标成现象：它不是根因了，也没有更深的原因 → 这棵树没有根因
+    t = M.updateNode(t, "n2", { role: "phenomenon" });
+    expect(M.rootCauses(t).size).toBe(0);
+    // 原因 → 原因 → 原因：只有最底下那个
+    let d = base();
+    d = M.addChild(d, "n2", { label: "版本没发放" }).tree;
+    d = M.addChild(d, "n4", { label: "没有发放流程" }).tree;
+    d = M.updateNode(d, "n5", { status: "confirmed" });
+    expect([...M.rootCauses(d)]).toEqual(["n5"]);
+    expect(M.causeChain(d, "n5")).toEqual(["夹具尺寸不对", "图纸旧", "版本没发放", "没有发放流程"]);
+    // 最底下是现象：往上找到第一个原因
+    d = M.updateNode(d, "n5", { role: "phenomenon" });
+    expect([...M.rootCauses(d)]).toEqual(["n4"]);
   });
 
-  it("两个根因：结论里都列上，步骤按根因顺序合并", () => {
-    let t = base();
-    t = M.updateNode(t, "n1", { gate: "and" });
-    t = M.updateNode(t, "n2", { status: "confirmed" });
-    t = M.updateNode(t, "n3", { status: "confirmed" });
-    t = M.applyResolution(t, "n2", { steps: ["换图纸"], solution: "两头一起改", day: "d", now: "n" });
-    t = M.applyResolution(t, "n3", { steps: ["换刀具"], solution: "两头一起改", day: "d", now: "n" });
+  it("解决步骤：整棵树按层级缩进，带验证结果和日期，排除的也在、对策不在", () => {
+    let t = M.addChild(base(), "n2", { label: "版本没发放", at: "2026-10-23" }).tree;
+    t = M.updateNode(t, "n4", { status: "confirmed" });
+    t = M.updateNode(t, "n3", { status: "ruled" });
+    t = act(t, "n4", "建立发放流程");
+    expect(M.stepsOutline(t)).toEqual([
+      "1. 图纸旧 — 已确认 · 2026-10-21",
+      "   1.1 版本没发放 — 已确认（根因） · 2026-10-23",
+      "2. 刀具磨损 — 已排除 · 2026-10-22",
+    ]);
+  });
+
+  it("方案 = 根因下的有效对策；没有对策写「未制定」", () => {
+    let t = M.updateNode(base(), "n2", { status: "confirmed" });
+    expect(M.resolutionText(M.buildAnalysis(t))).toMatch(/^解决方案：未制定/);
+    t = act(t, "n2", "收回旧图纸");
+    t = act(t, "n2", "试过换夹具", "ineffective");
+    t = act(t, "n2", "建立发放流程", "doing");
     const a = M.buildAnalysis(t);
-    expect(a.rootCauses.map((r) => r.label)).toEqual(["图纸旧", "刀具磨损"]);
-    expect(a.steps).toEqual(["换图纸", "换刀具"]);
-    // 因果链只有两节时不单独写一行（和「根因」那行重复）
-    expect(M.resolutionText(a)).toBe("解决方案：两头一起改\n根因：图纸旧；刀具磨损\n解决步骤：\n1. 换图纸\n2. 换刀具");
+    expect(a.solution).toEqual(["收回旧图纸", "建立发放流程"]);
+    expect(M.resolutionText(a)).toBe(
+      [
+        "解决方案：收回旧图纸；建立发放流程",
+        "根因：图纸旧",
+        "因果链：夹具尺寸不对 → 图纸旧",
+        "解决步骤：",
+        "1. 图纸旧 — 已确认（根因） · 2026-10-21",
+        "2. 刀具磨损 — 待验证 · 2026-10-22",
+      ].join("\n"),
+    );
+  });
+
+  it("确认：待做 / 进行中的对策标已完成，记下原样；撤回全部改回去", () => {
+    let t = M.updateNode(base(), "n2", { status: "confirmed" });
+    t = act(t, "n2", "收回旧图纸");
+    t = act(t, "n2", "建立发放流程", "doing");
+    t = act(t, "n2", "试过换夹具", "ineffective");
+    const item = { key: "note:3", closed: false, resolution: null };
+    const { tree: c } = M.confirmSolution(t, { item, feishu: true, now: "2026-10-30T00:00:00Z" });
+    expect(M.actionsUnder(c, "n2").map((a) => a.actionStatus)).toEqual(["done", "done", "ineffective"]);
+    expect(c.confirmation).toMatchObject({ item, feishu: true, actionPrev: { n4: "todo", n5: "doing" } });
+    expect(M.isStale(c)).toBe(false);
+
+    // 之后又改了树：过时
+    const later = act(c, "n2", "再加一条");
+    expect(M.isStale(later)).toBe(true);
+    // 只改备注不算
+    expect(M.isStale(M.updateNode(c, "n2", { note: "证据：图纸编号" }))).toBe(false);
+
+    const w = M.withdrawSolution(c);
+    expect(M.actionsUnder(w, "n2").map((a) => a.actionStatus)).toEqual(["todo", "doing", "ineffective"]);
+    expect(w).not.toHaveProperty("confirmation");
   });
 });
