@@ -51,13 +51,17 @@ for (const id of pluginIds()) {
     apiVersion: m.apiVersion,
     author: m.author,
     description: m.description,
+    keywords: Array.isArray(m.keywords) ? m.keywords : [],
+    // 市场详情页显示它。跟着仓库走，不跟着版本：改说明不用发新版
+    readme: existsSync(`plugins/${id}/README.md`) ? readFileSync(`plugins/${id}/README.md`, "utf8") : "",
     permissions: m.permissions ?? {},
     skills: (m.skills ?? []).map((s) => s.name),
     download,
   });
 }
 
-const changed = releases.length > 0 || plugins.length !== old.plugins.length;
+const changed =
+  releases.length > 0 || JSON.stringify(plugins) !== JSON.stringify(old.plugins);
 const index = {
   schema: 1,
   repo: REPO,

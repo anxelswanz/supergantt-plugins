@@ -11,9 +11,17 @@ export const PLUGINS_DIR = new URL("../plugins/", import.meta.url).pathname;
 /**
  * 不进包的文件。和宿主 plugin_host.rs 的 skip_on_install 是同一套规则：
  * 测试、插件运行时数据（data/）、隐藏文件。宿主那边还会再挡一次。
+ *
+ * 根上的 README.md 也不进：它进的是 index.json（市场详情页读那里）。
+ * 只改说明不该让包的字节变 —— 包和 sha256 是跟着版本号走的
  */
-export function skip(name) {
-  return name.startsWith(".") || name === "data" || /\.test\.[cm]?[jt]sx?$/.test(name);
+export function skip(name, depth = 1) {
+  return (
+    name.startsWith(".") ||
+    name === "data" ||
+    /\.test\.[cm]?[jt]sx?$/.test(name) ||
+    (depth === 0 && name === "README.md")
+  );
 }
 
 export function pluginIds() {
@@ -33,7 +41,7 @@ export const urlOf = (id, version) =>
 
 function collect(root, dir, out) {
   for (const name of readdirSync(dir).sort()) {
-    if (skip(name)) continue;
+    if (skip(name, dir === root ? 0 : 1)) continue;
     const full = join(dir, name);
     if (statSync(full).isDirectory()) collect(root, full, out);
     else out[relative(root, full).split(sep).join("/")] = [readFileSync(full), { mtime: ZIP_EPOCH }];

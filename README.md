@@ -20,7 +20,8 @@ SuperGantt 的官方插件。应用安装包里不带插件，用户在 **设置
 
 ```
 plugins/<id>/      一个插件一个目录。目录名 = manifest 里的 id
-  manifest.json
+  manifest.json    keywords 字段给市场搜索用
+  README.md        市场详情页显示它（不进包，改了不用发新版）
   main.js          入口，单文件、不能 import（宿主从 Blob URL 加载）
   styles.css       可选，自动注入
   *.test.ts        测试，不进包
