@@ -90,7 +90,8 @@ export interface PluginCommand {
   label: string;
   /** 快捷键提示，如 "⌘⇧K"。只显示，绑定需自己加监听 */
   hint?: string;
-  run: () => void | Promise<void>;
+  /** 1.3：别的插件经 commands.run(id, ...args) 调用时带参数；返回值原样交回调用方 */
+  run: (...args: unknown[]) => unknown;
 }
 
 /** 工具栏按钮 */
@@ -236,9 +237,16 @@ export interface PluginDataApi {
   people: {
     list(): { id: number; name: string }[];
   };
-  /** 事项清单，只读；与事项视图同一合并层（core/items.mergeItems） */
+  /** 事项清单；与事项视图同一合并层（core/items.mergeItems） */
   items: {
     list(): ItemView[];
+    /**
+     * 1.3：关闭一条事项并写下结论（key 即 ItemView.key）。
+     * 事项、风险写进结论；阻碍在今天结束并记下结论。已关闭的事项、风险会覆盖结论，
+     * 关闭日期记成今天；已结束的阻碍只改结论。
+     * 认不出、悬挂引用、还没分拣的事项会抛错 —— 规则和事项页的圆圈一致
+     */
+    close(key: string, resolution: string): Promise<void>;
     /** 事项、风险、类型表变了才通知；返回值取消订阅 */
     subscribe(listener: () => void): () => void;
   };
@@ -279,8 +287,13 @@ export interface PluginApi {
   };
   commands: {
     register(command: PluginCommand): Disposable;
-    /** 按 id 跑命令，可跨插件调用 */
-    run(id: string): void;
+    /**
+     * 按 id 跑命令，可跨插件调用。1.3 起可以带参数，返回命令的返回值；
+     * 命令不存在或抛错时 reject（1.2 及以前是静默吞掉）
+     */
+    run(id: string, ...args: unknown[]): Promise<unknown>;
+    /** 1.3：这个命令现在有没有（对方插件停用了就没有） */
+    has(id: string): boolean;
   };
   toolbar: {
     register(item: PluginToolbarItem): Disposable;

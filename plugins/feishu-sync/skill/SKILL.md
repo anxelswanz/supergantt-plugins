@@ -46,6 +46,9 @@ lark-cli base +field-list --as user --base-token <base> --table-id <table>
 核心只有一条：**把事项的信息和表的字段按含义一一对上，对不上的字段直接忽略**（不写、不清空、不编造）。
 用户为这张表写的规则 `rules.table` 优先级最高，其次 `rules.global`。
 
+事项带 `analysis`（故障树的根因分析：根因、因果链、解决步骤、解决方案）时，按 fill-rules.md
+「根因分析」一节对照表的字段拆开填；表里没有对应列就合并进最接近的列，不要丢掉根因和步骤。
+
 然后**只用这一个命令写入**：
 
 ```bash

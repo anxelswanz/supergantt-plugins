@@ -47,6 +47,7 @@ function setup() {
       people: { list: () => [] },
       items: { list: () => [], subscribe: () => () => {} },
     },
+    commands: { register: () => ({ dispose() {} }), has: () => false, run: async () => null },
     itemActions: { register: () => ({ dispose() {} }) },
     itemBadges: { register: () => ({ dispose() {} }), refresh: () => {} },
     views: { register: (_: unknown, c: React.ComponentType) => (View = c) },

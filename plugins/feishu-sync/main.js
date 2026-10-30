@@ -84,6 +84,22 @@ export function addEntry(queue, item, project, now) {
   };
 }
 
+/**
+ * 给一条队列项附上（或换掉）别的插件写的结构化分析。null = 拿掉。
+ * 故障树用它带上根因、因果链、解决步骤、解决方案；Agent 对着目标表的字段决定怎么拆
+ */
+export function setAnalysis(queue, key, analysis) {
+  if (!findEntry(queue, key)) return queue;
+  return {
+    ...queue,
+    entries: queue.entries.map((e) => {
+      if (e.key !== key) return e;
+      const { analysis: _old, ...rest } = e;
+      return analysis ? { ...rest, analysis } : rest;
+    }),
+  };
+}
+
 /** 只动本地，飞书上的记录不碰 */
 export function removeEntry(queue, key) {
   return { ...queue, entries: queue.entries.filter((e) => e.key !== key) };
@@ -291,6 +307,7 @@ export function buildSyncPrompt({ target, keys }) {
       ? `- 表名：${[target.baseName, target.tableName].filter(Boolean).join(" / ")}`
       : null,
     `- 本次只处理这些 key：${keys.join(",")}`,
+    "- 带 `analysis` 的事项（故障树的根因分析）按 fill-rules.md「根因分析」一节，对照表格字段拆开填写。",
     "- 这是后台无人值守运行：不要向用户提问。某一条处理不了，就用 `gantt feishu mark-failed` 记下原因，然后继续下一条。",
     "- 写入只能用 `gantt feishu write`（它自己决定新建还是更新）。不要删除任何记录、表或字段。",
     "- 全部处理完后，用一两句中文汇总：成功几条、失败几条、失败原因。",
@@ -846,46 +863,116 @@ export function onload(api) {
     );
   }
 
-  function useRun() {
-    const [run, setRun] = useState(null); // { log: [], proc, startedAt, done, code }
-    const ref = useRef(null);
+  /**
+   * 后台同步只有一份，放在插件层而不是视图里：故障树等插件经 feishu-sync.push
+   * 触发的同步，视图没打开也要能跑，打开飞书页时看到的是同一份进度。
+   * 正在跑时再来的 key 先记下，这一轮结束后接着同步。
+   */
+  const runState = { run: null, version: 0, proc: null, pending: new Set() };
+  const runSubs = new Set();
+  const setRun = (fn) => {
+    runState.run = fn(runState.run);
+    runState.version += 1;
+    for (const f of runSubs) f();
+  };
 
-    const start = async (target, keys) => {
-      const log = [];
-      const push = (entries) => {
-        log.push(...entries);
-        if (log.length > 300) log.splice(0, log.length - 300);
-        setRun((r) => (r ? { ...r, log: [...log] } : r));
-      };
-      let reloadTimer = null;
-      const reloadSoon = () => {
-        clearTimeout(reloadTimer);
-        reloadTimer = setTimeout(() => void reloadFromDisk(), 300);
-      };
-      setRun({ log: [], startedAt: Date.now(), done: false, code: null, keys });
-      try {
-        const proc = await api.proc.spawn("claude", agentArgs(), {
-          stdin: buildSyncPrompt({ target, keys }),
-          onStdout: (line) => {
-            push(describeStreamLine(line));
-            if (isToolResult(line)) reloadSoon();
-          },
-          onStderr: (line) => line.trim() && push([{ type: "stderr", text: line }]),
-        });
-        ref.current = proc;
-        const { code } = await proc.done;
-        await reloadFromDisk();
-        setRun((r) => ({ ...r, done: true, code }));
-      } catch (e) {
-        push([{ type: "error", text: e?.message ?? String(e) }]);
-        setRun((r) => ({ ...r, done: true, code: -1 }));
-      } finally {
-        ref.current = null;
-      }
+  const startRun = async (target, keys) => {
+    if (runState.run && !runState.run.done) {
+      keys.forEach((k) => runState.pending.add(k));
+      return;
+    }
+    const log = [];
+    const push = (entries) => {
+      log.push(...entries);
+      if (log.length > 300) log.splice(0, log.length - 300);
+      setRun((r) => (r ? { ...r, log: [...log] } : r));
     };
-    const cancel = () => ref.current?.kill();
-    return { run, start, cancel, clear: () => setRun(null) };
+    let reloadTimer = null;
+    const reloadSoon = () => {
+      clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(() => void reloadFromDisk(), 300);
+    };
+    setRun(() => ({ log: [], startedAt: Date.now(), done: false, code: null, keys }));
+    try {
+      const proc = await api.proc.spawn("claude", agentArgs(), {
+        stdin: buildSyncPrompt({ target, keys }),
+        onStdout: (line) => {
+          push(describeStreamLine(line));
+          if (isToolResult(line)) reloadSoon();
+        },
+        onStderr: (line) => line.trim() && push([{ type: "stderr", text: line }]),
+      });
+      runState.proc = proc;
+      const { code } = await proc.done;
+      await reloadFromDisk();
+      setRun((r) => ({ ...r, done: true, code }));
+    } catch (e) {
+      push([{ type: "error", text: e?.message ?? String(e) }]);
+      setRun((r) => ({ ...r, done: true, code: -1 }));
+    } finally {
+      runState.proc = null;
+    }
+    // 跑的过程中又有插件要同步的：接着来一轮（目标表以当时的配置为准）
+    const next = [...runState.pending];
+    runState.pending.clear();
+    if (next.length > 0 && state.config.target) void startRun(state.config.target, next);
+  };
+
+  function useRun() {
+    useSyncExternalStore(
+      (fn) => {
+        runSubs.add(fn);
+        return () => runSubs.delete(fn);
+      },
+      () => runState.version,
+    );
+    return {
+      run: runState.run,
+      start: startRun,
+      cancel: () => runState.proc?.kill(),
+      clear: () => setRun(() => null),
+    };
   }
+
+  /* ---------------- 给别的插件调用 ---------------- */
+
+  /**
+   * `api.commands.run("feishu-sync.push", { key, analysis, sync })`
+   *
+   * 把一条事项加入同步队列（已在队列里就刷新它的快照），附上结构化分析；
+   * sync 为 true 且已经选过目标表时立即后台同步。返回
+   * `{ queued, syncing, reason }`，reason 说明为什么没同步（没选表、没装 claude）
+   */
+  api.commands.register({
+    id: "feishu-sync.push",
+    label: "加入飞书同步",
+    hint: "给别的插件调用：加入同步队列并后台同步",
+    run: async ({ key, analysis = null, sync = true } = {}) => {
+      const project = api.data.project();
+      if (!project) throw new Error("没有打开项目");
+      const items = api.data.items.list();
+      const item = items.find((i) => i.key === key || entryKey(i) === key);
+      if (!item) throw new Error(`事项里没有「${key}」`);
+      if (item.kind == null) throw new Error("这条事项还没分拣，分拣后才能同步到飞书");
+      const ek = entryKey(item);
+      await mutateQueue((q) =>
+        setAnalysis(
+          // 已在队列里时 addEntry 不动它，所以再刷一遍快照：同步要用的是刚关闭、刚写了结论的那一版
+          refreshSnapshots(addEntry(q, item, project, new Date().toISOString()), items, project.id).queue,
+          ek,
+          analysis && { ...analysis, updatedAt: new Date().toISOString() },
+        ),
+      );
+      if (!sync) return { queued: true, syncing: false, reason: null };
+      const target = state.config.target;
+      if (!target) return { queued: true, syncing: false, reason: "还没在「飞书」页选目标表格，选好后在那里点同步" };
+      if (!(await api.proc.which("claude").catch(() => null))) {
+        return { queued: true, syncing: false, reason: "找不到 claude 命令，后台同步需要 Claude Code" };
+      }
+      void startRun(target, [ek]);
+      return { queued: true, syncing: true, reason: null };
+    },
+  });
 
   function useEnv() {
     const [env, setEnv] = useState(null);

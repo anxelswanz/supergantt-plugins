@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { validateManifest } from "../../sdk/manifest";
+import * as M from "./main.js";
 // 插件是纯 JS 单文件（宿主从 Blob URL 加载，不能 import），这里直接测它导出的纯函数
 import {
   actionStats,
@@ -256,5 +257,54 @@ describe("其他", () => {
   it("manifest 通过校验，没有警告；入口是自包含的单文件", () => {
     expect(validateManifest(read("./manifest.json"), "fault-tree")).toMatchObject({ ok: true, warnings: [] });
     expect(read("./main.js")).not.toMatch(/\bfrom\s*["']|\bimport\s*\(|\bimport\s+["']/);
+  });
+});
+
+describe("根因 → 解决", () => {
+  // 顶事件 → 或门 → [图纸旧(基本), 刀具磨损(基本)]
+  const base = () => {
+    let t = M.newTree({ id: "t", projectId: 1, label: "夹具尺寸不对", now: "2026-10-01T00:00:00Z" });
+    t = M.addChild(t, "n1", { label: "图纸旧" }).tree;
+    t = M.addChild(t, "n1", { label: "刀具磨损" }).tree;
+    return t;
+  };
+
+  it("newRootCauses：标已确认之后才冒出来的根因", () => {
+    const before = base();
+    const after = M.updateNode(before, "n2", { status: "confirmed" });
+    expect(M.newRootCauses(before, after)).toEqual(["n2"]);
+    expect(M.newRootCauses(after, after)).toEqual([]);
+    expect(M.causeChain(after, "n2")).toEqual(["夹具尺寸不对", "图纸旧"]);
+  });
+
+  it("applyResolution：步骤对上已有对策，多的新建、删掉的移除，都标已完成", () => {
+    let t = M.updateNode(base(), "n2", { status: "confirmed" });
+    t = M.applyResolution(t, "n2", { steps: ["收回", "重画", "  "], solution: " 版本发放流程 ", day: "2026-10-30", now: "N" });
+    expect(M.actionsUnder(t, "n2").map((a) => [a.label, a.actionStatus])).toEqual([
+      ["收回", "done"],
+      ["重画", "done"],
+    ]);
+    expect(t.nodes.n2.resolvedAt).toBe("N");
+    expect(t.solution).toBe("版本发放流程");
+    // 挂对策不改变结构：它还是根因
+    expect(M.rootCauses(t).has("n2")).toBe(true);
+
+    // 再写一次只剩一步：第二个对策被删掉
+    t = M.applyResolution(t, "n2", { steps: ["收回旧图纸"], solution: "x", day: "2026-10-30", now: "N2" });
+    expect(M.actionsUnder(t, "n2").map((a) => a.label)).toEqual(["收回旧图纸"]);
+  });
+
+  it("两个根因：结论里都列上，步骤按根因顺序合并", () => {
+    let t = base();
+    t = M.updateNode(t, "n1", { gate: "and" });
+    t = M.updateNode(t, "n2", { status: "confirmed" });
+    t = M.updateNode(t, "n3", { status: "confirmed" });
+    t = M.applyResolution(t, "n2", { steps: ["换图纸"], solution: "两头一起改", day: "d", now: "n" });
+    t = M.applyResolution(t, "n3", { steps: ["换刀具"], solution: "两头一起改", day: "d", now: "n" });
+    const a = M.buildAnalysis(t);
+    expect(a.rootCauses.map((r) => r.label)).toEqual(["图纸旧", "刀具磨损"]);
+    expect(a.steps).toEqual(["换图纸", "换刀具"]);
+    // 因果链只有两节时不单独写一行（和「根因」那行重复）
+    expect(M.resolutionText(a)).toBe("解决方案：两头一起改\n根因：图纸旧；刀具磨损\n解决步骤：\n1. 换图纸\n2. 换刀具");
   });
 });
