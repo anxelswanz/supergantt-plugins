@@ -1,0 +1,24 @@
+{
+  "name": "supergantt-plugins",
+  "private": true,
+  "type": "module",
+  "description": "SuperGantt 的官方插件。每个插件一个目录，发布成 GitHub Release 上的 zip，客户端按 index.json 下载",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "pack": "node scripts/pack.mjs",
+    "index": "tsx scripts/build-index.mjs",
+    "sync-sdk": "node scripts/sync-sdk.mjs"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "fflate": "^0.8.3",
+    "jsdom": "^29.1.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tsx": "^4.23.15",
+    "vite": "^7.3.7",
+    "vitest": "^4.1.12"
+  }
+}

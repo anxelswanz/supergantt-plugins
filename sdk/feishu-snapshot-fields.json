@@ -1,0 +1,15 @@
+[
+  "title",
+  "kind",
+  "kindLabel",
+  "priority",
+  "personId",
+  "personName",
+  "taskId",
+  "taskName",
+  "day",
+  "closed",
+  "closedDay",
+  "resolution",
+  "riskLevel"
+]

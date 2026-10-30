@@ -1,0 +1,15 @@
+{
+  "id": "daily-report",
+  "name": "日报",
+  "version": "1.0.0",
+  "author": "Ronghui",
+  "description": "按今天记下的问题和风险一键生成日报，分「问题」「风险」两类逐条编号，可直接复制",
+  "apiVersion": "1.1",
+  "views": [
+    {
+      "type": "daily-report.view",
+      "label": "日报",
+      "hint": "今天记了哪些问题和风险 —— 一键整理成日报"
+    }
+  ]
+}

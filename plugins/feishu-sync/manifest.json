@@ -1,0 +1,19 @@
+{
+  "id": "feishu-sync",
+  "name": "飞书同步",
+  "version": "1.6.0",
+  "author": "Ronghui",
+  "description": "把分拣好的事项同步到飞书多维表格：后台调用 Claude，按表格字段智能填写、润色。也可以在 Claude Code 里用 gantt-feishu 技能手动同步",
+  "apiVersion": "1.2",
+  "views": [
+    {
+      "type": "feishu-sync.view",
+      "label": "飞书",
+      "hint": "哪些事项要同步到飞书多维表格、同步了没有"
+    }
+  ],
+  "permissions": {
+    "exec": ["claude", "lark-cli", "gantt"]
+  },
+  "skills": [{ "dir": "skill", "name": "gantt-feishu" }]
+}

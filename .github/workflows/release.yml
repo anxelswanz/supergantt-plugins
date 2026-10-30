@@ -1,0 +1,70 @@
+# 推到 main 后：跑测试 → 找出版本号变了的插件 → 打 zip、建 Release → 把 index.json 提交回来。
+#
+# 顺序是故意的：先建 Release，再提交 index.json。反过来的话，中间那段时间
+# 客户端会读到一个指向还不存在的下载地址的 index。
+#
+# 发布一个插件 = 改它 manifest.json 里的 version，推到 main。版本号不变就不会重发。
+
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "plugins/**"
+      - "sdk/**"
+      - "scripts/**"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 要看到全部 tag，才知道哪些版本已经发过
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+
+      - name: 生成 index.json，找出新版本
+        run: npm run index
+
+      - name: 建 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          while read -r tag file title; do
+            [ -z "$tag" ] && continue
+            if gh release view "$tag" >/dev/null 2>&1; then
+              # 上一次建了 Release 却没提交成 index：包是可复现的，覆盖上传字节不变
+              gh release upload "$tag" "$file" --clobber
+            else
+              gh release create "$tag" "$file" --title "$title" --notes "$title"
+            fi
+          done < dist/releases.txt
+
+      - name: 提交 index.json
+        run: |
+          if git diff --quiet -- index.json && git ls-files --error-unmatch index.json >/dev/null 2>&1; then
+            echo "index.json 没有变化"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+          git add index.json
+          git commit -m "index: $(tr '\n' ' ' < dist/releases.txt | cut -c1-200)"
+          git push
