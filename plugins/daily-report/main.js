@@ -20,8 +20,9 @@ const BUILTIN_RANK = new Map(BUILTIN_KINDS.map(([k], i) => [k, i]));
 const kindKey = (it) => it.kind ?? UNSORTED;
 
 /**
- * 这份数据里有哪些类型，按显示顺序排好。问题、风险总在（日报的老两段，没有也写「无」），
+ * 这份数据里有哪些类型，按显示顺序排好。问题、风险总在（筛选项里要给用户看到），
  * 其余类型出现过才列。count 只数 range 内的条数（不传 range 数全部）。
+ * 只影响筛选项和排序；日报里没有记录的段整段不输出。
  */
 export function listKinds(items, range) {
   const kinds = new Map(BUILTIN_KINDS.slice(0, 2).map(([key, label]) => [key, { key, label, count: 0 }]));
@@ -105,30 +106,28 @@ export function buildReport(items, range, opts = {}) {
       ? `> 共 ${total} 条：${summary}${closed ? `；其中已关闭 ${closed}` : ""}`
       : "> 这段时间没有记录",
   );
-  if (inProgress) {
+  if (inProgress && inProgress.length) {
     out.push("", "## In Progress", "");
+    // 每层各自从 1 编号；子任务缩进 3 格成为嵌套列表
+    const counters = [];
     out.push(
-      ...(inProgress.length
-        ? (() => {
-            // 每层各自从 1 编号；子任务缩进 3 格成为嵌套列表
-            const counters = [];
-            return inProgress.map((t) => {
-              const depth = t.depth ?? 0;
-              counters.length = depth + 1;
-              counters[depth] = (counters[depth] ?? 0) + 1;
-              const tags = [`进度 ${Math.round(t.progress * 100)}%`];
-              if (withTask && t.personName) tags.push(`负责人：${t.personName}`);
-              if (t.end) tags.push(`计划 ${t.end.slice(5)} 完成`);
-              const name = t.name?.trim() || "（未命名任务）";
-              return `${"   ".repeat(depth)}${counters[depth]}. ${name}（${tags.join("，")}）`;
-            });
-          })()
-        : ["无"]),
+      ...inProgress.map((t) => {
+        const depth = t.depth ?? 0;
+        counters.length = depth + 1;
+        counters[depth] = (counters[depth] ?? 0) + 1;
+        const tags = [`进度 ${Math.round(t.progress * 100)}%`];
+        if (withTask && t.personName) tags.push(`负责人：${t.personName}`);
+        if (t.end) tags.push(`计划 ${t.end.slice(5)} 完成`);
+        const name = t.name?.trim() || "（未命名任务）";
+        return `${"   ".repeat(depth)}${counters[depth]}. ${name}（${tags.join("，")}）`;
+      }),
     );
   }
+  // 这段没东西就整段不出，不写「无」
   for (const s of lists) {
+    if (!s.rows.length) continue;
     out.push("", `## ${s.label}`, "");
-    out.push(...(s.rows.length ? s.rows.map(line) : ["无"]));
+    out.push(...s.rows.map(line));
   }
   return out.join("\n");
 }

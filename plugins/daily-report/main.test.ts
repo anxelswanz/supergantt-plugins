@@ -67,9 +67,17 @@ describe("buildReport", () => {
     );
   });
 
-  it("问题、风险没有时写「无」，不让那一段消失", () => {
+  it("某类没有记录就整段不输出，不写「无」", () => {
     const text = buildReport([item({ title: "只有问题" })], "2026-10-07");
-    expect(text).toContain("## 风险\n\n无");
+    expect(text).not.toContain("## 风险");
+    expect(text).not.toContain("## 待办");
+    expect(text).toContain("## 问题\n\n1. 只有问题");
+  });
+
+  it("只有一类有记录时，摘要也只提这一类", () => {
+    expect(buildReport(ITEMS.filter((it) => it.kind === "todo"), "2026-10-07")).toBe(
+      ["# 日报 2026-10-07", "", "> 共 1 条：待办 1", "", "## 待办", "", "1. 一条代办"].join("\n"),
+    );
   });
 
   it("这段时间什么都没有，摘要说清楚", () => {
@@ -140,8 +148,8 @@ describe("In Progress", () => {
     );
   });
 
-  it("没有进行中的任务时写「无」，这一段仍在", () => {
-    expect(buildReport(ITEMS, "2026-10-07", { inProgress: [] })).toContain("## In Progress\n\n无");
+  it("没有进行中的任务时整段不出", () => {
+    expect(buildReport(ITEMS, "2026-10-07", { inProgress: [] })).not.toContain("In Progress");
   });
 
   it("不传 inProgress 就没有这一段（老用法不变）", () => {
