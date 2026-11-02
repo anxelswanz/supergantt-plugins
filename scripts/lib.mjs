@@ -3,10 +3,12 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { zipSync } from "fflate";
 
 export const REPO = "anxelswanz/supergantt-plugins";
-export const PLUGINS_DIR = new URL("../plugins/", import.meta.url).pathname;
+// fileURLToPath 而不是 .pathname：Windows 上后者是 "/D:/…"，join 出来会变成 "D:\D:\…"
+export const PLUGINS_DIR = fileURLToPath(new URL("../plugins/", import.meta.url));
 
 /**
  * 不进包的文件。和宿主 plugin_host.rs 的 skip_on_install 是同一套规则：
