@@ -1,7 +1,7 @@
 {
   "id": "daily-report",
   "name": "日报",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "author": "Ronghui",
   "description": "选今天或一段时间，列出进行中的任务，再把事项里的问题、风险、待办等记录按类型筛选，生成 Markdown 日报",
   "keywords": ["日报", "周报", "问题", "风险", "待办", "Markdown", "report"],

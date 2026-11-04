@@ -10,9 +10,9 @@ import { APP_VIEWS } from "./views";
  * 宿主当前提供的 API 版本。删字段/改语义 → major+1（旧插件拒绝加载）；
  * 只加新方法 → minor+1（旧插件照常跑）。
  */
-export const HOST_API_VERSION: Version = { major: 1, minor: 4 };
+export const HOST_API_VERSION: Version = { major: 1, minor: 8 };
 /* 1.1：data.items；1.2：itemActions/itemBadges、proc、storage、data.project/people、
-   ItemView.closedDay/noteId、permissions、skills；1.3：data.items.close、commands.run 带参数并返回 Promise、commands.has；1.4：data.items.reopen、close 可不带结论 */
+   ItemView.closedDay/noteId、permissions、skills；1.3：data.items.close、commands.run 带参数并返回 Promise、commands.has；1.4：data.items.reopen、close 可不带结论；1.5：composer.register；1.6：ai、data.projectSnapshot、data.legacyAiReviews、export.document、permissions.ai；1.7：data.account、pickFiles；1.8：data.items.reload */
 
 /** 内置视图的 key，插件视图不能用。从 core/views.ts 读而不另抄一份 ——
  *  抄的那份会在新增内置视图后漏掉，冲突只在装了那个插件的机器上复现。 */
@@ -165,6 +165,10 @@ export function validateManifest(
         return { ok: false, error: `"permissions.exec" 必须是程序名数组，如 ["lark-cli"]，不能带路径` };
       }
       permissions = { exec: p.exec as string[] };
+    }
+    if (p.ai !== undefined) {
+      if (typeof p.ai !== "boolean") return { ok: false, error: `"permissions.ai" 必须是 true 或 false` };
+      if (p.ai) permissions = { ...permissions, ai: true };
     }
   }
 

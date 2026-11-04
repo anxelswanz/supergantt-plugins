@@ -291,6 +291,7 @@ export function onload(api) {
     const [to, setTo] = useState(todayIso);
     const [excluded, setExcluded] = useState(() => new Set(readExcluded(api)));
     const [version, setVersion] = useState(0);
+    const [reloading, setReloading] = useState(false);
     const [text, setText] = useState("");
     const [preview, setPreview] = useState(false);
     const [copied, setCopied] = useState(false);
@@ -332,6 +333,29 @@ export function onload(api) {
         }),
       );
     useEffect(generate, [items, doing, from, to, excluded]);
+
+    /**
+     * 「重新生成」：先从库里重读事项，再拼正文。
+     *
+     * items 按 version 缓存，而阻碍存在任务上、进度也在任务上，这些变了
+     * items.subscribe 不会通知。以前这个按钮直接用缓存拼正文，所以点了也
+     * 看不到新内容；这里一定要让 version 变，逼 items 和 doing 重新取。
+     * 宿主 1.8 才有 reload；老宿主没有它，只重取内存里的数据。
+     */
+    const regenerate = async () => {
+      if (api.data.items.reload) {
+        setReloading(true);
+        try {
+          await api.data.items.reload();
+        } catch {
+          // 读库失败就用手上这份，总比什么都不出强
+        } finally {
+          setReloading(false);
+        }
+      }
+      // version 一变，items 重新 list()，上面那个 effect 接着重写正文
+      setVersion((v) => v + 1);
+    };
 
     const saveExcluded = (next) => {
       setExcluded(next);
@@ -393,8 +417,13 @@ export function onload(api) {
         }),
         h(
           "button",
-          { className: "dr-btn dr-push", onClick: generate, title: "丢掉手改的内容，按当前数据重新生成" },
-          "重新生成",
+          {
+            className: "dr-btn dr-push",
+            onClick: () => void regenerate(),
+            title: "从库里重读事项，丢掉手改的内容，按当前数据重新生成",
+            disabled: reloading,
+          },
+          reloading ? "读取中…" : "重新生成",
         ),
         h(
           "button",

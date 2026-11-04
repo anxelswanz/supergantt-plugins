@@ -53,6 +53,12 @@ const ITEMS = [
 function setup() {
   const store = new Map<string, string>();
   let View: React.ComponentType = () => null;
+  /**
+   * 事项的「库」。list() 每次返回一个新数组（宿主的 itemSnapshot 就是这样）。
+   * 测试从外面往 items 里塞东西，模拟数据在别处变了、内存里那份还是旧的。
+   */
+  const items = [...ITEMS];
+  const reloads: number[] = [];
   const api = {
     react: React,
     dir: "/tmp/daily-report",
@@ -68,7 +74,13 @@ function setup() {
       set: (k: string, v: string) => store.set(k, v),
     },
     data: {
-      items: { list: () => ITEMS, subscribe: () => () => {} },
+      items: {
+        list: () => [...items],
+        reload: async () => {
+          reloads.push(Date.now());
+        },
+        subscribe: () => () => {},
+      },
       tasks: { list: () => TASKS, subscribe: () => () => {} },
       people: { list: () => [{ id: 1, name: "张三" }] },
     },
@@ -85,7 +97,7 @@ function setup() {
     },
   };
   onload(api as never);
-  return { View, store };
+  return { View, store, items, reloads };
 }
 
 const textarea = () => screen.getByRole("textbox") as HTMLTextAreaElement;

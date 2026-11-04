@@ -9,7 +9,6 @@ export type BuiltinView =
   | "board"
   | "timeline"
   | "review"
-  | "ai-review"
   | "items"
   | "milestone";
 
@@ -25,7 +24,6 @@ export const APP_VIEWS: ViewMeta[] = [
   { key: "board", label: "看板", hint: "此刻谁没开始、谁在做、谁卡住了" },
   { key: "timeline", label: "时间线", hint: "逐日流水：每天发生了什么" },
   { key: "review", label: "复盘", hint: "计划与实际差在哪、为什么、丢了多少天" },
-  { key: "ai-review", label: "AI 复盘", hint: "Claude 问十道题，写出根因分析和可沉淀的 SOP、避坑清单" },
   { key: "items", label: "事项", hint: "还没成为计划的那些：代办、问题、风险、阻碍" },
   { key: "milestone", label: "里程碑", hint: "项目关键节点：设定、关联任务、在甘特图上标记" },
 ];
@@ -42,7 +40,6 @@ export const OPTIONAL_VIEWS: BuiltinView[] = [
   "board",
   "timeline",
   "review",
-  "ai-review",
   "items",
   "milestone",
 ];

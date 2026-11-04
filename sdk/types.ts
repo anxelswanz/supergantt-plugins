@@ -4,6 +4,9 @@
  */
 
 import type { ComponentType } from "react";
+import type { Snapshot as ProjectSnapshot } from "./snapshot";
+
+export type { ProjectSnapshot };
 
 /** 半兼容版本号，与项目文件格式同一套约定 */
 export interface Version {
@@ -37,6 +40,8 @@ export interface PluginManifest {
 export interface PluginPermissions {
   /** 允许运行的程序（裸程序名）。工作目录固定是插件目录，shell 一律不许 */
   exec?: string[];
+  /** 1.6：能用 api.ai 把内容发给 Claude（零工具：读不了文件、跑不了命令） */
+  ai?: boolean;
 }
 
 /** manifest 里声明的视图元信息；扫描阶段就要知道，工具条才不会先画错位再跳。 */
@@ -167,6 +172,18 @@ export interface PluginItemAction {
 }
 
 /** 事项行标题旁的小标签。返回 null 不显示 */
+/**
+ * 1.5：「记一条」录入弹窗里的一个开关（例如「加入飞书队列」）。
+ * 开关状态由宿主按 id 记住；存下一条事项后，开着的开关逐个收到 onSaved
+ */
+export interface PluginComposerOption {
+  id: string;
+  label: string;
+  hint?: string;
+  /** 刚存下的那条事项（已经带上录入时选的分类）。抛错会显示在录入弹窗里，不影响已经存下的事项 */
+  onSaved: (item: ItemView) => void | Promise<void>;
+}
+
 export interface PluginItemBadge {
   id: string;
   render: (item: ItemView) => { text: string; title?: string; color?: string } | null;
@@ -233,6 +250,15 @@ export interface PluginDataApi {
   };
   /** 当前打开的项目；项目列表页时为 null */
   project(): { id: number; name: string } | null;
+  /** 1.7：当前登录的账号。日志 / 「谁改的」用它，不要拿项目成员去猜 */
+  account(): { id: number; name: string } | null;
+  /**
+   * 1.6：项目此刻的快照（排期偏差、受阻归因、里程碑、阻碍、风险、事项、逐日记录），
+   * 和「复盘」视图同一份计算。会先把还没落库的改动写掉。没打开项目时为 null
+   */
+  projectSnapshot(): Promise<ProjectSnapshot | null>;
+  /** 1.6：当前项目里旧版内置 AI 复盘的记录（只读，迁移用） */
+  legacyAiReviews(): Promise<LegacyAiReview[]>;
   /** 全部负责人 */
   people: {
     list(): { id: number; name: string }[];
@@ -240,6 +266,11 @@ export interface PluginDataApi {
   /** 事项清单；与事项视图同一合并层（core/items.mergeItems） */
   items: {
     list(): ItemView[];
+    /**
+     * 1.8：从库里重读事项、风险和类型表。list() 读的是内存，CLI、其他进程写进库的
+     * 要 reload 之后才看得到。阻碍存在任务上，任务表不重读（内存里可能有没落库的改动）
+     */
+    reload(): Promise<void>;
     /**
      * 1.3：关闭一条事项并写下结论（key 即 ItemView.key）。
      * 事项、风险写进结论；阻碍在今天结束并记下结论。已关闭的事项、风险会覆盖结论，
@@ -256,6 +287,45 @@ export interface PluginDataApi {
     /** 事项、风险、类型表变了才通知；返回值取消订阅 */
     subscribe(listener: () => void): () => void;
   };
+}
+
+/** 1.6：api.ai.ask 的结果 */
+export type PluginAiResult =
+  | { ok: true; text: string; structured: unknown }
+  | { ok: false; error: string; cancelled: boolean };
+
+/**
+ * 1.6：问 Claude。**零工具**：程序和参数由宿主写死（src-tauri/src/ai.rs），
+ * 它读不了文件、跑不了命令，只能「读提示词，吐文字」。要在 manifest 声明 permissions.ai
+ */
+export interface PluginAiApi {
+  /** 本机有没有装 claude */
+  available(): Promise<boolean>;
+  ask(
+    prompt: string,
+    opts?: {
+      /** JSON Schema 字符串：要结构化输出时给，结果在 structured */
+      schema?: string;
+      /** 系统提示词，单行、不带引号、400 字以内 */
+      system?: string;
+      /** 不给 schema 时逐字流式：每多一段就调一次，参数是到目前为止的全文 */
+      onText?: (soFar: string) => void;
+    },
+  ): Promise<{ done: Promise<PluginAiResult>; cancel(): void }>;
+}
+
+/** 1.6：旧版内置 AI 复盘留在库里的一行。background/snapshot/questions 是 JSON 串 */
+export interface LegacyAiReview {
+  id: number;
+  projectId: number;
+  title: string;
+  stage: string;
+  background: string;
+  snapshot: string;
+  questions: string;
+  document: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 /** 修改动作，全部经命令栈，自动获得撤销/重做/落库。 */
@@ -313,6 +383,10 @@ export interface PluginApi {
   itemActions: {
     register(action: PluginItemAction): Disposable;
   };
+  /** 1.5：「记一条」录入弹窗的扩展点 */
+  composer: {
+    register(option: PluginComposerOption): Disposable;
+  };
   itemBadges: {
     register(badge: PluginItemBadge): Disposable;
     /** 插件状态变了、徽标需重画时调用 */
@@ -320,6 +394,17 @@ export interface PluginApi {
   };
   proc: PluginProcApi;
   storage: PluginStorage;
+  /** 1.6：零工具的 Claude 调用，要 permissions.ai */
+  ai: PluginAiApi;
+  /** 1.6：导出 */
+  /** 1.7：让用户挑文件（图片、PDF、CSV…）。取消时返回空数组 */
+  pickFiles(opts: { multiple?: boolean; filters?: { name: string; extensions: string[] }[] }): Promise<string[]>;
+  export: {
+    /** 弹保存框，把一份 Markdown 存成 .md 或 Word。用户取消时 path 为 null */
+    document(input: { markdown: string; title: string; format: "md" | "docx"; fileName?: string }): Promise<{
+      path: string | null;
+    }>;
+  };
   /** 日期换算工具 */
   util: {
     /** 天序号 → "YYYY-MM-DD" */
