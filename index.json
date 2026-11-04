@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "repo": "anxelswanz/supergantt-plugins",
-  "updatedAt": "2026-11-02T20:12:18.300Z",
+  "updatedAt": "2026-11-04T20:43:49.631Z",
   "plugins": [
     {
       "id": "daily-report",
       "name": "日报",
-      "version": "1.1.1",
+      "version": "1.1.2",
       "apiVersion": "1.1",
       "author": "Ronghui",
       "description": "选今天或一段时间，列出进行中的任务，再把事项里的问题、风险、待办等记录按类型筛选，生成 Markdown 日报",
@@ -23,9 +23,9 @@
       "permissions": {},
       "skills": [],
       "download": {
-        "url": "https://github.com/anxelswanz/supergantt-plugins/releases/download/daily-report-v1.1.1/daily-report-1.1.1.zip",
-        "sha256": "35b183d32d0d0001d45b91e07476560eabf6008b5677aa745296c545666aec83",
-        "size": 7880
+        "url": "https://github.com/anxelswanz/supergantt-plugins/releases/download/daily-report-v1.1.2/daily-report-1.1.2.zip",
+        "sha256": "037c879350873ce8302153954e274506f56582f01508d220883ce839ce643b10",
+        "size": 8327
       }
     },
     {
