@@ -4,6 +4,15 @@ import { readFileSync } from "node:fs";
 import { validateManifest } from "../../sdk/manifest";
 import {
   applyBatch,
+  partsRow,
+  planSync,
+  rememberLogs,
+  rememberParts,
+  PARTS_FIELDS,
+  LOGS_FIELDS,
+  FT,
+  applyDelete,
+  applyRestore,
   applyAdjust,
   applyReceive,
   applyCheck,
@@ -253,6 +262,38 @@ describe("搜索与筛选", () => {
   });
 });
 
+describe("删除与恢复", () => {
+  it("删除：库存清零并写一条 delete 日志，条目留作墓碑、序号不复用", () => {
+    const { data, part } = seed({ qty: 3 });
+    const next = applyDelete(data, part.id, ctx);
+    expect(next.parts[0].qty).toBe(0);
+    expect(next.parts[0].deleted).toBe(true);
+    expect(next.parts[0].deletedBy).toBe("张三");
+    expect(next.logs.at(-1)).toMatchObject({ type: "delete", qty: -3, before: 3, after: 0 });
+    expect(checkInvariants(next)).toEqual([]);
+    // 已删除的条目不出现，也挡着 SKU 重复
+    expect(filterParts(decorate(next), {})).toHaveLength(0);
+    expect(filterParts(decorate(next), { deleted: true }).map((r) => r.name)).toEqual(["伺服电机"]);
+    expect(applyCreate(next, { name: "新的", sku: "sm-400w", qty: 1 }, ctx).parts.at(-1).seq).toBe(2);
+  });
+
+  it("删除没有库存的条目：不写日志，也不会有空日志", () => {
+    const { data, part } = seed({ qty: 0 });
+    const next = applyDelete(data, part.id, ctx);
+    expect(next.logs.filter((l) => l.type === "delete")).toHaveLength(0);
+  });
+
+  it("删除后不能再用、再入库也行；恢复后库存是 0，需要入库补回来", () => {
+    const { data, part, entity } = seed({ qty: 4 });
+    const del = applyDelete(data, part.id, ctx);
+    expect(() => applyUse(del, { partId: part.id, qty: 1, entityId: entity.id }, ctx)).toThrow("已经删除");
+    const back = applyRestore(del, part.id, later);
+    expect(back.parts[0].deleted).toBe(false);
+    expect(back.parts[0].qty).toBe(0);
+    expect(applyReceive(back, { partId: part.id, qty: 2 }, later).parts[0].qty).toBe(2);
+  });
+});
+
 describe("收件箱批次（gantt spare push）", () => {
   const batch = (id: string, items: unknown[], source = "DN-1") => ({ id, at: "2026-11-04T10:00:00Z", by: "张三", source, items });
 
@@ -284,6 +325,68 @@ describe("收件箱批次（gantt spare push）", () => {
   it("一条名称都没有就什么都不写", () => {
     const d = EMPTY_DATA();
     expect(applyBatch(d, batch("imp0", [{ name: "" }]), ctx)).toBe(d);
+  });
+});
+
+describe("飞书同步：写什么", () => {
+  const seeded = () => {
+    let d = EMPTY_DATA();
+    d = applyCreate(d, { name: "伺服电机", sku: "SM-400W", category: "电机", qty: 5, minQty: 2 }, ctx);
+    d = applyCreate(d, { name: "急停按钮", sku: "ES-22", category: "元件", qty: 12 }, ctx);
+    d = applyEntityCreate(d, { name: "Robot1" }, ctx).data;
+    return applyUse(d, { partId: d.parts[0].id, qty: 2, entityId: d.entities[0].id, personId: 7 }, later);
+  };
+
+  it("第一次同步：两张表都从头建；日志等备件行有 record_id 才写", () => {
+    const d = seeded();
+    const plan = planSync(d, { parts: {}, logs: {} });
+    expect(plan.partsCreate.map((x) => x.row.fields.名称)).toEqual(["伺服电机", "急停按钮"]);
+    expect(plan.partsUpdate).toHaveLength(0);
+    expect(plan.logsCreate).toHaveLength(0);
+    expect(plan.skippedLogs.length).toBe(d.logs.length);
+  });
+
+  it("备件行建好后：按顺序认领 record_id，日志带关联记录 id", () => {
+    const d = seeded();
+    let st = rememberParts({ parts: {}, logs: {} }, [
+      { partId: d.parts[0].id, recordId: "recA", row: partsRow(d.parts[0]) },
+      { partId: d.parts[1].id, recordId: "recB", row: partsRow(d.parts[1]) },
+    ], []);
+    const plan = planSync(d, st);
+    expect(plan.partsCreate).toHaveLength(0);
+    expect(plan.partsUpdate).toHaveLength(0);
+    expect(plan.logsCreate.length).toBe(d.logs.length);
+    const used = plan.logsCreate.find((x) => x.log.type === "use");
+    expect(used.row.fields.备件).toEqual(["recA"]);
+    expect(used.row.fields.设备).toBe("Robot1");
+    expect(used.row.fields.数量).toBe(-2);
+    expect(used.row.fields.类型).toBe("使用");
+  });
+
+  it("库存变了只更新那一行；没变的行不动", () => {
+    const d = seeded();
+    const st = rememberParts({ parts: {}, logs: {} }, [
+      { partId: d.parts[0].id, recordId: "recA", row: partsRow(d.parts[0]) },
+      { partId: d.parts[1].id, recordId: "recB", row: partsRow(d.parts[1]) },
+    ], []);
+    const been = rememberLogs(st, d.logs.map((l) => ({ logId: l.id, recordId: "rec" + l.id })));
+    const after = applyReceive(d, { partId: d.parts[0].id, qty: 3 }, later);
+    const plan = planSync(after, been);
+    expect(plan.partsUpdate.map((u) => [u.recordId, u.row.fields.库存])).toEqual([["recA", 6]]);
+    expect(plan.logsCreate).toHaveLength(1); // 刚入库那条
+  });
+
+  it("状态列自己算：没库存 / 库存不足 / 正常 / 已删除", () => {
+    expect(partsRow({ ...EMPTY_DATA().parts[0], name: "x", qty: 0, minQty: null }).fields.状态).toBe("没库存");
+    expect(partsRow({ name: "x", qty: 1, minQty: 2 }).fields.状态).toBe("库存不足");
+    expect(partsRow({ name: "x", qty: 5, minQty: 2 }).fields.状态).toBe("正常");
+    expect(partsRow({ name: "x", qty: 5, deleted: true }).fields.状态).toBe("已删除");
+  });
+
+  it("建表列：第一列必须是文本（飞书拿它当索引列），日志表的备件是关联类型", () => {
+    expect(PARTS_FIELDS[0]).toEqual({ name: "名称", type: FT.text });
+    expect(LOGS_FIELDS[0]).toEqual({ name: "说明", type: FT.text });
+    expect(LOGS_FIELDS.find((f) => f.name === "备件").type).toBe(FT.link);
   });
 });
 

@@ -414,3 +414,70 @@
   font-size: 10px;
   color: var(--text-dim);
 }
+
+/* 删除 */
+.sp-btn-danger {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--rule));
+  color: var(--danger);
+}
+.sp-btn-danger:hover {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+}
+.sp-tag-del {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+.sp-deleted {
+  opacity: 0.6;
+}
+.sp-deleted .sp-c-name {
+  text-decoration: line-through;
+}
+
+/* 飞书 */
+.sp-feishu {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 720px;
+}
+.sp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sp-tables {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid var(--rule);
+  padding-top: 10px;
+}
+.sp-tablerow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+.sp-fs-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  font-size: 11px;
+}
+.sp-fs-log {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-alt);
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.7;
+  max-height: 200px;
+  overflow-y: auto;
+}

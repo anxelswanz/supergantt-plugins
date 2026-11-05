@@ -1,9 +1,9 @@
 {
   "id": "spare-parts",
   "name": "备件清单",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Ronghui",
-  "description": "按项目管一份备件台账：搜索筛选、使用扣减、盘点校准，每次变动都留库存变更日志，可导入发货单",
+  "description": "按项目管一份备件台账：搜索筛选、使用扣减、盘点校准，每次变动都留库存变更日志；可导入发货单，可同步到飞书多维表格",
   "keywords": [
     "备件",
     "库存",
@@ -11,7 +11,9 @@
     "spare",
     "parts",
     "inventory",
-    "发货单"
+    "发货单",
+    "飞书",
+    "bitable"
   ],
   "apiVersion": "1.7",
   "views": [
@@ -22,9 +24,11 @@
     }
   ],
   "permissions": {
+    "ai": true,
     "exec": [
       "claude",
-      "gantt"
+      "gantt",
+      "lark-cli"
     ]
   },
   "skills": [

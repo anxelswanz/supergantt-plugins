@@ -54,9 +54,12 @@ export function parseData(raw) {
   return d;
 }
 
-/** 下一个序号：不复用已归档 / 被删掉的号，日志里的序号才永远指向同一个东西 */
+/** 下一个序号：不复用已归档 / 已删除的号，日志里的序号才永远指向同一个东西 */
 export function nextSeq(data) {
-  return data.parts.reduce((m, p) => Math.max(m, p.seq ?? 0), 0) + 1;
+  const fromParts = data.parts.reduce((m, p) => Math.max(m, p.seq ?? 0), 0);
+  // 已删除的条目还留在 parts 里（见 applyDelete），这里再兜一层：日志里出现过的号也不算空
+  const fromLogs = data.logs.reduce((m, l) => Math.max(m, l.seq ?? 0), 0);
+  return Math.max(fromParts, fromLogs, data.meta?.lastSeq ?? 0) + 1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -79,6 +82,10 @@ export function checkInvariants(data) {
     lastAfter.set(l.partId, l.after);
   }
   for (const p of data.parts) {
+    if (p.deleted) continue;
+    if (!Number.isInteger(p.qty) || p.qty < 0) {
+      problems.push(`「${p.name}」库存是 ${p.qty}，不能是负数`);
+    }
     const last = lastAfter.get(p.id);
     if (last != null && last !== p.qty) {
       problems.push(`「${p.name}」库存 ${p.qty}，但最后一条日志是 ${last}`);
@@ -139,7 +146,7 @@ export function applyCreate(state, input, ctx = {}) {
   const initialQty = Number(input.qty ?? 0);
   if (!Number.isInteger(initialQty) || initialQty < 0) throw new Error("初始库存要是 ≥ 0 的整数");
   const sku = String(input.sku ?? "").trim();
-  if (sku && data.parts.some((p) => !p.archived && p.sku && p.sku.toLowerCase() === sku.toLowerCase())) {
+  if (sku && data.parts.some((p) => !p.archived && !p.deleted && p.sku && p.sku.toLowerCase() === sku.toLowerCase())) {
     throw new Error(`SKU「${sku}」已经存在`);
   }
   const at = ctx.at ?? nowIso();
@@ -157,12 +164,14 @@ export function applyCreate(state, input, ctx = {}) {
     note: String(input.note ?? "").trim(),
     fields: Array.isArray(input.fields) ? input.fields.filter((f) => f?.label) : [],
     archived: false,
+    deleted: false,
     createdAt: at,
     createdBy: ctx.by ?? "",
     updatedAt: at,
     updatedBy: ctx.by ?? "",
   };
   data.parts.push(part);
+  data.meta.lastSeq = Math.max(data.meta.lastSeq ?? 0, part.seq);
   if (initialQty > 0) {
     pushLog(data, part, {
       type: input.importId ? "import" : "create",
@@ -200,7 +209,7 @@ export function applyBatch(state, batch, ctx = {}) {
   for (const r of items) {
     const qty = Math.max(0, Math.round(Number(r.qty) || 0));
     const sku = String(r.sku ?? "").trim().toLowerCase();
-    const hit = sku ? next.parts.find((p) => !p.archived && p.sku && p.sku.toLowerCase() === sku) : null;
+    const hit = sku ? next.parts.find((p) => !p.archived && !p.deleted && p.sku && p.sku.toLowerCase() === sku) : null;
     if (hit) {
       if (qty === 0) continue;
       const part = next.parts.find((p) => p.id === hit.id);
@@ -239,6 +248,45 @@ export function applyBatch(state, batch, ctx = {}) {
   return next;
 }
 
+/**
+ * 删除条目：有库存就先清零（写一条 delete 日志），然后标成已删除。
+ *
+ * 不把它从 parts 里拿掉：日志全都靠 partId + 序号指向它，拿掉之后历史就读不懂了；
+ * 「序号不复用」也靠它占着号（见 nextSeq）。界面上看不到，日志里显示「已删除」。
+ */
+export function applyDelete(state, partId, ctx = {}) {
+  const data = clone(state);
+  const part = data.parts.find((p) => p.id === partId);
+  if (!part) throw new Error("找不到这个备件");
+  if (part.deleted) return data;
+  const at = ctx.at ?? nowIso();
+  if (part.qty > 0) {
+    pushLog(data, part, { type: "delete", qty: -part.qty, note: "删除条目，库存清零", by: ctx.by ?? "", at });
+  }
+  part.deleted = true;
+  part.deletedAt = at;
+  part.deletedBy = ctx.by ?? "";
+  part.updatedAt = at;
+  part.updatedBy = ctx.by ?? "";
+  data.meta.lastSeq = Math.max(data.meta.lastSeq ?? 0, part.seq);
+  data.rev += 1;
+  return data;
+}
+
+/** 把删掉的条目找回来：只是又能看见、能操作；库存是 0，要用「入库」加回来 */
+export function applyRestore(state, partId, ctx = {}) {
+  const data = clone(state);
+  const part = data.parts.find((p) => p.id === partId);
+  if (!part) throw new Error("找不到这个备件");
+  part.deleted = false;
+  part.deletedAt = null;
+  part.deletedBy = null;
+  part.updatedAt = ctx.at ?? nowIso();
+  part.updatedBy = ctx.by ?? part.updatedBy;
+  data.rev += 1;
+  return data;
+}
+
 /** 改条目属性（不动库存） */
 export function applyUpdate(state, partId, patch, ctx = {}) {
   const data = clone(state);
@@ -260,6 +308,7 @@ export function applyUse(state, { partId, qty, entityId, personId, note }, ctx =
   const data = clone(state);
   const part = data.parts.find((p) => p.id === partId);
   if (!part) throw new Error("找不到这个备件");
+  if (part.deleted) throw new Error("这个备件已经删除，先恢复再用");
   if (part.archived) throw new Error("这个备件已经归档，先恢复再用");
   const n = positiveInt(qty);
   if (!entityId) throw new Error("要选一台设备（Entity）");
@@ -378,6 +427,18 @@ export function revertImport(state, importId, ctx = {}) {
   const applied = data.logs.filter((l) => l.importId === importId && !l.revertedBy);
   if (!applied.length) throw new Error("这一批没有可撤销的记录");
   const at = ctx.at ?? nowIso();
+  // 先把会扣成负数的挑出来：宁可整批不动，也不要冲掉一半、留下一个对不上的台账
+  const running = new Map(data.parts.map((p) => [p.id, p.qty]));
+  for (const log of applied) {
+    const left = (running.get(log.partId) ?? 0) - log.qty;
+    if (left < 0) {
+      const part = data.parts.find((p) => p.id === log.partId);
+      throw new Error(
+        `「${part?.name ?? log.partId}」已经被用掉一部分，撤销这一批会扣成负数。先补入库，或只撤销其中的条目`,
+      );
+    }
+    running.set(log.partId, left);
+  }
   for (const log of applied) {
     const part = data.parts.find((p) => p.id === log.partId);
     if (!part) continue;
@@ -412,6 +473,8 @@ export const EMPTY_FILTER = {
   people: [],
   lastUsed: null, // "never" | "7d" | "30d" | null
   archived: false,
+  /** 已删除的条目默认不出现在清单里，在「导入 / 已删除」页能看到、能恢复 */
+  deleted: false,
 };
 
 /** 列表用的投影：条目 + 从日志里派生出来的「最近使用」，不单独存字段 */
@@ -440,6 +503,7 @@ export function filterParts(rows, filter, now = Date.now()) {
   const f = { ...EMPTY_FILTER, ...filter };
   const q = f.q.trim().toLowerCase();
   return rows.filter((r) => {
+    if (Boolean(r.deleted) !== Boolean(f.deleted)) return false;
     if (!f.archived && r.archived) return false;
     if (!hit(r.name, q) && !hit(r.sku, q) && !hit(r.spec, q) && !hit(r.note, q) && !hit(r.category, q) && !hit(r.location, q)) {
       return false;
@@ -484,15 +548,165 @@ export const LOG_TYPES = [
   { key: "receive", label: "入库" },
   { key: "check", label: "盘点" },
   { key: "adjust", label: "调整" },
+  { key: "delete", label: "删除" },
 ];
 
 export const logTypeLabel = (t) => LOG_TYPES.find((x) => x.key === t)?.label ?? t;
 
-const Model = { parseData, applyBatch, checkInvariants, sortParts, filterParts, decorate, applyEntityCreate, applyUse, applyReceive, applyCreate, applyUpdate, applyCheck, applyAdjust, filterLogs, revertImport };
+const Model = { parseData, applyBatch, applyDelete, applyRestore, checkInvariants, sortParts, filterParts, decorate, applyEntityCreate, applyUse, applyReceive, applyCreate, applyUpdate, applyCheck, applyAdjust, filterLogs, revertImport };
 
 /* ================================================================== */
-/* 视图                                                                */
+/* 飞书同步：纯逻辑（接口调用在视图里，这里只决定「写什么」）              */
 /* ================================================================== */
+
+/** 飞书多维表格的字段类型编号（bitable v1） */
+export const FT = { text: 1, number: 2, select: 3, date: 5, link: 18 };
+
+/** 两种表的列。order 决定建表时的顺序：第一个必须是文本（飞书拿它当索引列） */
+export const PARTS_FIELDS = [
+  { name: "名称", type: FT.text },
+  { name: "序号", type: FT.number },
+  { name: "SKU", type: FT.text },
+  { name: "规格", type: FT.text },
+  { name: "分类", type: FT.select },
+  { name: "位置", type: FT.text },
+  { name: "库存", type: FT.number },
+  { name: "安全库存", type: FT.number },
+  { name: "单位", type: FT.text },
+  { name: "状态", type: FT.select },
+  { name: "gantt_part_id", type: FT.text },
+];
+
+export const LOGS_FIELDS = [
+  { name: "说明", type: FT.text },
+  { name: "类型", type: FT.select },
+  { name: "日期", type: FT.date },
+  { name: "备件", type: FT.link },
+  { name: "设备", type: FT.text },
+  { name: "数量", type: FT.number },
+  { name: "库存变化", type: FT.text },
+  { name: "领用人", type: FT.text },
+  { name: "操作人", type: FT.text },
+  { name: "备注", type: FT.text },
+  { name: "gantt_log_id", type: FT.text },
+];
+
+/** 状态列：自己算「是否不足」，不依赖 decorate —— 同步拿的是原始台账 */
+const STATUS_LABEL = (p) =>
+  p.deleted
+    ? "已删除"
+    : p.archived
+      ? "已归档"
+      : p.qty === 0
+        ? "没库存"
+        : p.minQty != null && p.qty <= p.minQty
+          ? "库存不足"
+          : "正常";
+
+/** 备件表的一行（不含飞书 record_id —— 那个由同步状态记） */
+export function partsRow(p) {
+  return {
+    fields: {
+      名称: p.name || "（未命名）",
+      序号: p.seq,
+      SKU: p.sku || "",
+      规格: p.spec || "",
+      分类: p.category || "",
+      位置: p.location || "",
+      库存: p.qty,
+      安全库存: p.minQty ?? null,
+      单位: p.unit || "",
+      状态: STATUS_LABEL(p),
+      gantt_part_id: p.id,
+    },
+    // 自定义列（每张表列名不同，建表时按出现过的标签加列）
+    extra: p.fields?.length ? Object.fromEntries(p.fields.map((f) => [f.label, f.value ?? ""])) : {},
+  };
+}
+
+/**
+ * 日志表的一行。备件列是**关联记录**：值为飞书那边的 record_id。
+ * 找不到对应记录（备件还没同步）时整条先不同步 —— 没有关联的日志行没有意义，
+ * 下一次同步（备件行建好之后）再写。
+ */
+export function logsRow(l, part, partRecordId, personName) {
+  return {
+    fields: {
+      说明: `${l.seq ?? ""} ${part?.name ?? "（已删除的备件）"}`.trim(),
+      类型: LOG_TYPES.find((t) => t.key === l.type)?.label ?? l.type,
+      日期: Date.parse(l.at) || null,
+      // 写记录时关联字段传 record_id 数组（batch_create 的请求体就是这么写的；
+      // 读回来才是 { link_record_ids, text_arr } 那种包装，别混）
+      备件: partRecordId ? [partRecordId] : null,
+      设备: l.entityName || "",
+      数量: l.qty,
+      库存变化: `${l.before} → ${l.after}`,
+      领用人: personName ?? "",
+      操作人: l.by || "",
+      备注: l.note || "",
+      gantt_log_id: l.id,
+    },
+  };
+}
+
+/**
+ * 算出这一轮要写什么。纯函数：不碰网络、不碰存储。
+ *
+ * state = { parts: { partId: recordId }, logs: { logId: recordId }, lastSyncAt }
+ * - 备件：已经有 recordId 的更新；没影响到的（序号/名称/库存都没变）不动；新的新建。
+ * - 日志：只追加没写过的；备件行还没有 recordId 的跳过。
+ *
+ * 返回 { parts: {create, update}, logs: {create, skippedPendingPart} }
+ */
+export function planSync(data, state, { full = false } = {}) {
+  const partsCreate = [];
+  const partsUpdate = [];
+  for (const p of data.parts) {
+    const row = partsRow(p);
+    const rec = state.parts?.[p.id];
+    if (!rec) {
+      // 带上 partId：批量写完要按返回顺序认领 record_id，行本身不携带 id
+      partsCreate.push({ partId: p.id, row });
+    } else if (full || rec.fingerprint !== JSON.stringify(row.fields)) {
+      partsUpdate.push({ partId: p.id, recordId: rec.recordId, row });
+    }
+  }
+
+  const logsCreate = [];
+  const skipped = [];
+  for (const l of data.logs) {
+    if (state.logs?.[l.id]) continue;
+    const rec = state.parts?.[l.partId];
+    if (!rec) {
+      skipped.push(l.id);
+      continue;
+    }
+    const part = data.parts.find((p) => p.id === l.partId);
+    logsCreate.push({ log: l, row: logsRow(l, part, rec.recordId) });
+  }
+
+  return { partsCreate, partsUpdate, logsCreate, skippedLogs: skipped };
+}
+
+/** 写完之后把它存进同步状态：飞书的 record_id 和用来判断「有没有变」的指纹 */
+export function rememberParts(state, createdIds, updatedRows) {
+  const next = { ...state, parts: { ...(state.parts ?? {}) } };
+  createdIds.forEach(({ partId, recordId, row }) => {
+    next.parts[partId] = { recordId, fingerprint: JSON.stringify(row.fields) };
+  });
+  for (const { partId, recordId, row } of updatedRows) {
+    next.parts[partId] = { recordId, fingerprint: JSON.stringify(row.fields) };
+  }
+  return next;
+}
+
+export function rememberLogs(state, pairs) {
+  const next = { ...state, logs: { ...(state.logs ?? {}) } };
+  for (const { logId, recordId } of pairs) next.logs[logId] = recordId;
+  next.lastSyncAt = new Date().toISOString();
+  return next;
+}
+
 
 const emptyFilter = () => ({
   q: "",
@@ -518,7 +732,7 @@ const LAST_USED_OPTIONS = [
   { value: "7d", label: "7 天内用过" },
 ];
 
-const TYPE_LABEL = { create: "新建", import: "导入", use: "使用", receive: "入库", check: "盘点", adjust: "调整" };
+const TYPE_LABEL = { create: "新建", import: "导入", use: "使用", receive: "入库", check: "盘点", adjust: "调整", delete: "删除" };
 
 const fmtTime = (iso) => {
   if (!iso) return "";
@@ -639,7 +853,11 @@ export function onload(api) {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [project?.id]);
 
-    return { project, data, error, setError, save };
+    return { project, data, error, setError, save, reload: () => {
+      const p = api.data.project();
+      if (!p) return Promise.resolve();
+      return api.storage.read(storeName(p.id)).then((raw) => setData(Model.parseData(raw)));
+    } };
   }
 
   /**
@@ -732,7 +950,7 @@ export function onload(api) {
   /* ---------------- 台账视图 ---------------- */
 
   function Ledger() {
-    const { project, data, error, setError, save } = useLedger();
+    const { project, data, error, setError, save, reload } = useLedger();
     const [tab, setTab] = useState("parts");
     const [filter, setFilter] = useState(emptyFilter);
     const [dialog, setDialog] = useState(null);
@@ -773,6 +991,7 @@ export function onload(api) {
           h(Chip, { on: tab === "parts", onClick: () => setTab("parts") }, `清单 ${data.parts.filter((p) => !p.archived).length}`),
           h(Chip, { on: tab === "logs", onClick: () => setTab("logs") }, "日志"),
           h(Chip, { on: tab === "imports", onClick: () => setTab("imports") }, `导入 ${data.imports.filter((i) => !i.revertedAt).length}`),
+          h(Chip, { on: tab === "feishu", onClick: () => setTab("feishu") }, "飞书"),
         ),
         h("span", { className: "sp-push" }),
         h(Btn, { kind: "primary", onClick: () => setDialog({ kind: "edit" }) }, "＋ 新增"),
@@ -850,6 +1069,16 @@ export function onload(api) {
               },
               "含已归档",
             ),
+            data.parts.some((p) => p.deleted) &&
+              h(
+                Chip,
+                {
+                  on: filter.deleted,
+                  onClick: () => setFilter({ ...filter, deleted: !filter.deleted }),
+                  title: "看删掉的条目，能把它们恢复",
+                },
+                `已删除 ${data.parts.filter((p) => p.deleted).length}`,
+              ),
           ),
           h(
             "div",
@@ -876,11 +1105,19 @@ export function onload(api) {
               h("span", { className: "sp-c-act" }, ""),
             ),
             rows.length === 0 &&
-              h("div", { className: "sp-emptyrow" }, filter.q || filter.status || filter.categories.length ? "没有符合条件的备件" : "还没有备件 —— 点右上「新增」，或用「从发货单导入」"),
+              h(
+                "div",
+                { className: "sp-emptyrow" },
+                filter.deleted
+                  ? "没有删除的条目"
+                  : filter.q || filter.status || filter.categories.length
+                    ? "没有符合条件的备件"
+                    : "还没有备件 —— 点右上「新增」，或用「从发货单导入」",
+              ),
             rows.map((r) =>
               h(
                 "div",
-                { key: r.id, className: `sp-tr${r.archived ? " sp-archived" : ""}${r.low ? " sp-rowlow" : ""}` },
+                { key: r.id, className: `sp-tr${r.archived ? " sp-archived" : ""}${r.low ? " sp-rowlow" : ""}${r.deleted ? " sp-deleted" : ""}` },
                 h("span", { className: "sp-c-seq sp-mono" }, r.seq),
                 h(
                   "span",
@@ -888,6 +1125,7 @@ export function onload(api) {
                   r.name,
                   r.low && h("span", { className: "sp-tag sp-tag-low" }, "不足"),
                   r.archived && h("span", { className: "sp-tag" }, "已归档"),
+                  r.deleted && h("span", { className: "sp-tag sp-tag-del" }, "已删除"),
                 ),
                 h("span", { className: "sp-c-sku sp-mono" }, r.sku || "—"),
                 h("span", { className: "sp-c-spec sp-dim" }, r.spec || "—"),
@@ -907,9 +1145,15 @@ export function onload(api) {
                 h(
                   "span",
                   { className: "sp-c-act" },
-                  !r.archived && h(Btn, { small: true, onClick: () => setDialog({ kind: "use", part: r }) }, "使用"),
-                  h(Btn, { small: true, onClick: () => setDialog({ kind: "receive", part: r }) }, "入库"),
-                  h(Btn, { small: true, onClick: () => setDialog({ kind: "edit", part: r }) }, "编辑"),
+                  r.deleted
+                    ? h(Btn, { small: true, onClick: () => setDialog({ kind: "restore", part: r }) }, "恢复")
+                    : h(
+                        React.Fragment,
+                        null,
+                        !r.archived && h(Btn, { small: true, onClick: () => setDialog({ kind: "use", part: r }) }, "使用"),
+                        h(Btn, { small: true, onClick: () => setDialog({ kind: "receive", part: r }) }, "入库"),
+                        h(Btn, { small: true, onClick: () => setDialog({ kind: "edit", part: r }) }, "编辑"),
+                      ),
                   h(Btn, { small: true, onClick: () => setDialog({ kind: "history", part: r }) }, "…"),
                 ),
               ),
@@ -921,11 +1165,38 @@ export function onload(api) {
       tab === "imports" &&
         h(ImportHistory, { data, h, onClose: () => setTab("parts"), commit }),
 
+      tab === "feishu" && h(FeishuPane, { data, me, reload }),
+
       dialog?.kind === "use" && h(UseDialog, { part: dialog.part, data, api, me, React, h, onClose: () => setDialog(null), commit }),
       dialog?.kind === "receive" && h(ReceiveDialog, { part: dialog.part, api, React, h, onClose: () => setDialog(null), commit }),
       dialog?.kind === "edit" && h(EditDialog, { part: dialog.part, data, React, h, onClose: () => setDialog(null), commit }),
       dialog?.kind === "check" && h(CheckDialog, { data, React, h, me, onClose: () => setDialog(null), commit, initialFilter: filter }),
       dialog?.kind === "history" && h(HistoryDialog, { part: dialog.part, data, React, h, onClose: () => setDialog(null) }),
+      dialog?.kind === "restore" &&
+        h(
+          Dialog,
+          {
+            title: `恢复「${dialog.part.seq} ${dialog.part.name}」`,
+            onClose: () => setDialog(null),
+            footer: [
+              h(Btn, { key: "c", onClick: () => setDialog(null) }, "取消"),
+              h(
+                Btn,
+                {
+                  key: "ok",
+                  kind: "primary",
+                  onClick: () => void commit((d) => Model.applyRestore(d, dialog.part.id, who())),
+                },
+                "恢复",
+              ),
+            ],
+          },
+          h(
+            "div",
+            { className: "sp-hint" },
+            "恢复之后条目重新出现在清单里，但库存是 0 —— 之前的库存已经在删除时清零了，需要用「入库」加回来。",
+          ),
+        ),
       dialog?.kind === "import" && h(ImportDialog, { data, api, React, h, me, onClose: () => setDialog(null), commit }),
     );
   }
@@ -1037,7 +1308,23 @@ export function onload(api) {
         onClose,
         footer: [
           part &&
-            h(Btn, { key: "arch", onClick: () => void commit((d) => Model.applyUpdate(d, part.id, { archived: !part.archived }, who())) }, part.archived ? "恢复" : "归档"),
+            h(Btn, { key: "arch", onClick: () => void commit((d) => Model.applyUpdate(d, part.id, { archived: !part.archived }, who())) }, part.archived ? "取消归档" : "归档"),
+          part &&
+            h(
+              Btn,
+              {
+                key: "del",
+                kind: "danger",
+                onClick: () => {
+                  const ok = window.confirm(
+                    `删除「${part.name}」？\n\n库存 ${part.qty} ${part.unit} 会清零并记一条日志。` +
+                      "条目不会真的消失，在「已删除」里能找回来（库存不会跟着回来）。",
+                  );
+                  if (ok) void commit((d) => Model.applyDelete(d, part.id, who()));
+                },
+              },
+              "删除",
+            ),
           h("span", { key: "sp", className: "sp-push" }),
           h(Btn, { key: "c", onClick: onClose }, "取消"),
           h(
@@ -1209,7 +1496,7 @@ export function onload(api) {
   function Logs({ data, me }) {
     const [filter, setFilter] = useState({ entityId: "", partId: "", types: [], from: "", to: "" });
     const logs = Model.filterLogs(data.logs, { ...filter, entityId: filter.entityId || undefined, partId: filter.partId || undefined });
-    const partName = new Map(data.parts.map((p) => [p.id, `${p.seq} ${p.name}`]));
+    const partName = new Map(data.parts.map((p) => [p.id, p.deleted ? `${p.seq} ${p.name}（已删除）` : `${p.seq} ${p.name}`]));
     const personName = new Map(api.data.people.list().map((p) => [p.id, p.name]));
     return h(
       "div",
@@ -1306,6 +1593,378 @@ export function onload(api) {
       ...rows.map((r) => `| ${r} |`),
     ].join("\n");
     return api.export.document({ markdown: md, title: "库存变更日志", format: "md", fileName: "库存变更日志" }).catch(() => {});
+  }
+
+  /* ---------------- 飞书同步 ---------------- */
+
+  const feishuStore = (projectId) => `feishu-${projectId}.json`;
+  const emptyFeishu = () => ({
+    baseToken: "",
+    partsTableId: "",
+    logsTableId: "",
+    parts: {},
+    logs: {},
+    lastSyncAt: null,
+  });
+
+  /** lark-cli 的 JSON 信封：成功 `{ok:true,data}`，失败 `{ok:false,error}` */
+  const parseLarkJson = (text) => {
+    let j;
+    try {
+      j = JSON.parse(text);
+    } catch {
+      const raw = String(text ?? "").trim();
+      return { ok: false, error: raw.slice(0, 300) || "lark-cli 没有输出" };
+    }
+    if (j && j.ok === false) {
+      const e = j.error ?? {};
+      return { ok: false, error: [e.message, e.hint].filter(Boolean).join("\n") || "lark-cli 报错" };
+    }
+    return { ok: true, data: j?.data ?? j };
+  };
+
+  /** 裸调一条 OpenAPI。用 `lark-cli api` 而不是 base 子命令：建表 / 批量写记录的参数以官方接口为准 */
+  const lark = async (method, path, { data, params } = {}) => {
+    const args = ["api", method, path, "--as", "user"];
+    if (params) args.push("--params", JSON.stringify(params));
+    if (data) args.push("--data", JSON.stringify(data));
+    const r = await api.proc.exec("lark-cli", args);
+    const out = parseLarkJson(r.stdout || r.stderr);
+    if (!out.ok) throw new Error(out.error);
+    return out.data;
+  };
+
+  /** `/base/xxx` 或 `/wiki/xxx` 链接 → base token；wiki 要再解析一层 */
+  const baseTokenOf = async (link) => {
+    const s = String(link ?? "").trim();
+    const base = /\/base\/([A-Za-z0-9]+)/.exec(s);
+    if (base) return base[1];
+    const wiki = /\/wiki\/([A-Za-z0-9]+)/.exec(s);
+    if (wiki) {
+      const d = await lark("GET", `/open-apis/wiki/v2/spaces/get_node`, {
+        params: { token: wiki[1], obj_type: "wiki" },
+      });
+      const node = d?.node ?? d;
+      if (node?.obj_type !== "bitable") throw new Error(`这个知识库节点是 ${node?.obj_type ?? "未知类型"}，不是多维表格`);
+      return node.obj_token;
+    }
+    if (/^[A-Za-z0-9]{20,}$/.test(s)) return s;
+    throw new Error("看不懂这个链接：贴多维表格的地址，形如 https://xxx.feishu.cn/base/<token>");
+  };
+
+  const listFeishuTables = async (baseToken) => {
+    const d = await lark("GET", `/open-apis/bitable/v1/apps/${baseToken}/tables`, { params: { page_size: 100 } });
+    return (d?.items ?? []).map((t) => ({ id: t.table_id, name: t.name }));
+  };
+
+  const tableFields = (defs, linkTableId) =>
+    defs.map((f) =>
+      f.type === FT.link
+        ? { field_name: f.name, type: FT.link, property: { table_id: linkTableId } }
+        : { field_name: f.name, type: f.type },
+    );
+
+  /** 在用户给的 Base 里建两张表：备件表、库存变更日志表（日志表的「备件」是关联到备件表） */
+  const createFeishuTables = async (baseToken) => {
+    const parts = await lark("POST", `/open-apis/bitable/v1/apps/${baseToken}/tables`, {
+      data: { table: { name: "备件清单", default_view_name: "表格", fields: tableFields(PARTS_FIELDS) } },
+    });
+    const partsTableId = parts?.table_id;
+    if (!partsTableId) throw new Error("建备件表没有返回 table_id");
+    const logs = await lark("POST", `/open-apis/bitable/v1/apps/${baseToken}/tables`, {
+      data: {
+        table: { name: "库存变更日志", default_view_name: "表格", fields: tableFields(LOGS_FIELDS, partsTableId) },
+      },
+    });
+    return { partsTableId, logsTableId: logs?.table_id ?? "" };
+  };
+
+  /**
+   * 拿已有表里的 gantt_part_id / gantt_log_id 重建映射。
+   * 不这么做的话，关联一张已经有数据的表会再建一遍同样的行。
+   */
+  const adoptFeishuTable = async (baseToken, tableId, idField) => {
+    const map = {};
+    let pageToken;
+    for (let i = 0; i < 200; i++) {
+      const d = await lark("GET", `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records`, {
+        params: pageToken ? { page_size: 500, page_token: pageToken } : { page_size: 500 },
+      });
+      for (const rec of d?.items ?? []) {
+        const raw = rec?.fields?.[idField];
+        // 文本单元格读回来是 [{text}] 数组
+        const id = Array.isArray(raw) ? raw.map((x) => x?.text ?? "").join("") : raw;
+        if (id) map[String(id)] = rec.record_id;
+      }
+      if (!d?.has_more || !d.page_token) break;
+      pageToken = d.page_token;
+    }
+    return map;
+  };
+
+  /**
+   * 批量写记录。**按字节切块**：lark-cli 在 Windows 上可能是 .cmd，
+   * 走 cmd.exe 时命令行只有 8K 左右，一次塞几百条会直接失败。
+   */
+  const chunksByBytes = (items, toBody, limit = 6000) => {
+    const out = [];
+    let cur = [];
+    let size = 0;
+    for (const it of items) {
+      const n = JSON.stringify(toBody([it])).length;
+      if (cur.length && size + n > limit) {
+        out.push(cur);
+        cur = [];
+        size = 0;
+      }
+      cur.push(it);
+      size += n;
+    }
+    if (cur.length) out.push(cur);
+    return out;
+  };
+
+  const batchCreate = async (baseToken, tableId, rows) => {
+    const ids = [];
+    for (const chunk of chunksByBytes(rows, (xs) => ({ records: xs.map((r) => ({ fields: r.fields })) }))) {
+      const d = await lark("POST", `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/batch_create`, {
+        data: { records: chunk.map((r) => ({ fields: r.fields })) },
+      });
+      const got = (d?.records ?? []).map((r) => r.record_id ?? r.id);
+      // 返回顺序与请求一致；万一条数对不上就按位置尽量对，剩下的留给下一轮（不会重复写：下一轮还是按 gantt id 判重）
+      chunk.forEach((r, i) => ids.push({ row: r, recordId: got[i] ?? null }));
+    }
+    return ids;
+  };
+
+  const batchUpdate = async (baseToken, tableId, pairs) => {
+    for (const chunk of chunksByBytes(pairs, (xs) => ({ records: xs.map((p) => ({ record_id: p.recordId, fields: p.row.fields })) }))) {
+      await lark("POST", `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/batch_update`, {
+        data: { records: chunk.map((p) => ({ record_id: p.recordId, fields: p.row.fields })) },
+      });
+    }
+  };
+
+  function FeishuPane({ data, me, reload }) {
+    const project = api.data.project();
+    const [state, setState] = useState(null);
+    const [link, setLink] = useState("");
+    const [tables, setTables] = useState(null);
+    const [busy, setBusy] = useState(false);
+    const [log, setLog] = useState([]);
+    const [err, setErr] = useState(null);
+    const name = project ? feishuStore(project.id) : null;
+
+    useEffect(() => {
+      let live = true;
+      if (!name) return;
+      void api.storage
+        .read(name)
+        .then((raw) => {
+          if (!live) return;
+          try {
+            setState({ ...emptyFeishu(), ...(raw ? JSON.parse(raw) : {}) });
+          } catch {
+            setState(emptyFeishu());
+          }
+        })
+        .catch(() => live && setState(emptyFeishu()));
+      return () => {
+        live = false;
+      };
+    }, [name]);
+
+    const saveState = async (next) => {
+      setState(next);
+      if (name) await api.storage.write(name, JSON.stringify(next));
+    };
+
+    const note = (m) => setLog((l) => [...l.slice(-60), m]);
+
+    const resolve = async () => {
+      setBusy(true);
+      setErr(null);
+      setLog([]);
+      try {
+        const baseToken = await baseTokenOf(link);
+        const list = await listFeishuTables(baseToken);
+        setTables(list);
+        note(`这个多维表格里有 ${list.length} 张表`);
+      } catch (e) {
+        setErr(String(e.message ?? e));
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    const provision = async () => {
+      setBusy(true);
+      setErr(null);
+      try {
+        const baseToken = await baseTokenOf(link);
+        note("正在建两张表…");
+        const made = await createFeishuTables(baseToken);
+        await saveState({ ...emptyFeishu(), baseToken, ...made });
+        note("建好了：备件清单、库存变更日志（后者用关联字段指向备件）");
+      } catch (e) {
+        setErr(String(e.message ?? e));
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    const adopt = async (partsTableId, logsTableId) => {
+      setBusy(true);
+      setErr(null);
+      try {
+        const baseToken = await baseTokenOf(link);
+        note("正在读已有表里的记录…");
+        const parts = await adoptFeishuTable(baseToken, partsTableId, "gantt_part_id");
+        const logs = logsTableId ? await adoptFeishuTable(baseToken, logsTableId, "gantt_log_id") : {};
+        const next = { ...emptyFeishu(), baseToken, partsTableId, logsTableId: logsTableId ?? "" };
+        for (const [partId, recordId] of Object.entries(parts)) next.parts[partId] = { recordId, fingerprint: "" };
+        for (const [logId, recordId] of Object.entries(logs)) next.logs[logId] = recordId;
+        await saveState(next);
+        note(`认出了 ${Object.keys(parts).length} 条备件、${Object.keys(logs).length} 条日志；之后的同步会更新它们，不再重复建`);
+      } catch (e) {
+        setErr(String(e.message ?? e));
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    const sync = async () => {
+      if (!state?.partsTableId) return;
+      setBusy(true);
+      setErr(null);
+      setLog([]);
+      try {
+        let st = { ...state };
+        const { baseToken, partsTableId, logsTableId } = st;
+
+        note("备件：比对中…");
+        const plan = planSync(data, st, { full: false });
+        // 1) 新建备件行
+        if (plan.partsCreate.length) {
+          const made = await batchCreate(
+            baseToken,
+            partsTableId,
+            plan.partsCreate.map((x) => x.row),
+          );
+          // batchCreate 按请求顺序返回；第 i 条就是 plan.partsCreate[i] 那一行
+          const pairs = made
+            .map((m, i) => (m.recordId ? { partId: plan.partsCreate[i].partId, recordId: m.recordId, row: plan.partsCreate[i].row } : null))
+            .filter(Boolean);
+          st = rememberParts(st, pairs, []);
+          note(`备件：新建 ${pairs.length} 行`);
+        }
+        // 2) 更新有变化的备件行
+        if (plan.partsUpdate.length) {
+          await batchUpdate(baseToken, partsTableId, plan.partsUpdate);
+          st = rememberParts(
+            st,
+            [],
+            plan.partsUpdate.map((u) => ({ partId: u.partId, recordId: u.recordId, row: u.row })),
+          );
+          note(`备件：更新 ${plan.partsUpdate.length} 行`);
+        }
+
+        // 3) 日志：备件行有了 record_id 之后才算得出来
+        if (logsTableId) {
+          const { logsCreate, skippedLogs } = planSync(data, st, {});
+          if (logsCreate.length) {
+            const rows = logsCreate.map((x) => x.row);
+            const made = await batchCreate(baseToken, logsTableId, rows);
+            const pairs = made
+              .map((m, i) => (m.recordId ? { logId: logsCreate[i].log.id, recordId: m.recordId } : null))
+              .filter(Boolean);
+            st = rememberLogs(st, pairs);
+            note(`日志：新建 ${pairs.length} 条`);
+          }
+          if (skippedLogs.length) note(`日志：${skippedLogs.length} 条等备件行建好后再传`);
+        }
+
+        st.lastSyncAt = new Date().toISOString();
+        await saveState(st);
+        note("同步完成");
+      } catch (e) {
+        setErr(String(e.message ?? e));
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    if (!state) return h("div", { className: "sp-hint" }, "读取中…");
+
+    const ready = state.partsTableId;
+
+    return h(
+      "div",
+      { className: "sp-feishu" },
+      h(
+        "p",
+        { className: "sp-hint" },
+        "把这份备件同步到飞书多维表格：备件表按序号/SKU 匹配更新，日志表只追加，不删除你那边已有的行。只推不拉 —— 飞书里改了不会回写到本地。",
+      ),
+
+      !ready &&
+        h(
+          React.Fragment,
+          null,
+          h(Field, { label: "多维表格链接", hint: "贴 /base/… 或 /wiki/… 的地址，必须对它有编辑权限" },
+            h("input", { className: "sp-input", value: link, onChange: (e) => setLink(e.target.value), placeholder: "https://xxx.feishu.cn/base/…" }),
+          ),
+          h(
+            "div",
+            { className: "sp-row" },
+            h(Btn, { onClick: () => void resolve(), disabled: busy || !link.trim() }, busy ? "查询中…" : "查看里面的表"),
+            h(Btn, { kind: "primary", onClick: () => void provision(), disabled: busy || !link.trim() }, "自动建两张表"),
+          ),
+          tables &&
+            h(
+              "div",
+              { className: "sp-tables" },
+              h("div", { className: "sp-field-label" }, "或者关联已有的表"),
+              h(
+                "p",
+                { className: "sp-hint" },
+                "表里要有 gantt_part_id / gantt_log_id 这两列（隐藏列也行），否则认不出哪些行是这个插件写的。",
+              ),
+              tables.map((t) =>
+                h(
+                  "div",
+                  { key: t.id, className: "sp-tablerow" },
+                  h("span", { className: "sp-flex" }, t.name),
+                  h("span", { className: "sp-dim sp-mono" }, t.id),
+                  h(Btn, { small: true, disabled: busy, onClick: () => void adopt(t.id, "") }, "用作备件表"),
+                ),
+              ),
+            ),
+        ),
+
+      ready &&
+        h(
+          React.Fragment,
+          null,
+          h(
+            "div",
+            { className: "sp-fs-summary" },
+            h("div", null, h("span", { className: "sp-field-label" }, "备件表"), h("span", { className: "sp-mono sp-dim" }, ` ${state.partsTableId}`)),
+            h("div", null, h("span", { className: "sp-field-label" }, "日志表"), h("span", { className: "sp-mono sp-dim" }, ` ${state.logsTableId || "（没设）"}`)),
+            h("div", { className: "sp-dim" }, state.lastSyncAt ? `上次同步 ${fmtTime(state.lastSyncAt)}` : "还没同步过"),
+          ),
+          h(
+            "div",
+            { className: "sp-row" },
+            h(Btn, { kind: "primary", onClick: () => void sync(), disabled: busy }, busy ? "同步中…" : "同步"),
+            h(Btn, { onClick: () => void saveState({ ...emptyFeishu() }), disabled: busy }, "重新设置"),
+          ),
+          h("p", { className: "sp-hint" }, "新建的行不会重复：按 gantt_part_id / gantt_log_id 认出已经写过的那一行。"),
+        ),
+
+      err && h("div", { className: "sp-error" }, err),
+      log.length > 0 && h("div", { className: "sp-fs-log" }, log.map((m, i) => h("div", { key: i }, m))),
+    );
   }
 
   /* ---------------- 从发货单导入 ---------------- */
