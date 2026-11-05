@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "repo": "anxelswanz/supergantt-plugins",
-  "updatedAt": "2026-11-04T20:43:49.631Z",
+  "updatedAt": "2026-11-05T09:44:11.268Z",
   "plugins": [
     {
       "id": "daily-report",
@@ -83,6 +83,38 @@
         "url": "https://github.com/anxelswanz/supergantt-plugins/releases/download/feishu-sync-v1.7.1/feishu-sync-1.7.1.zip",
         "sha256": "d8baf54e4852296b20c33fb9a0d96b8448fe1d24a3e029102df4021b70d1bde3",
         "size": 26627
+      }
+    },
+    {
+      "id": "spare-parts",
+      "name": "备件清单",
+      "version": "0.1.0",
+      "apiVersion": "1.7",
+      "author": "Ronghui",
+      "description": "按项目管一份备件台账：搜索筛选、使用扣减、盘点校准，每次变动都留库存变更日志，可导入发货单",
+      "keywords": [
+        "备件",
+        "库存",
+        "盘点",
+        "spare",
+        "parts",
+        "inventory",
+        "发货单"
+      ],
+      "readme": "# 备件清单\n\n按项目管一份备件台账：搜关键字、按字段筛、用一个扣一个、盘点时按实盘数校准，每次变动都留一条库存变更日志。发货单可以贴文字让 AI 识别，也可以在 Claude Code 里用 `gantt-spare-parts` 技能直接把单据录进来。\n\n## 用法\n\n1. 启用后，工具条上多出「备件」视图。**备件跟着项目走**：先打开一个项目，看到的就是这个项目的备件\n2. **新增**：右上「＋ 新增」，填名称、SKU、规格、分类、位置、单位、初始库存\n3. **搜索 / 筛选**：搜索框查名称、SKU、规格、分类、位置、备注；旁边按状态（库存不足 / 没库存 / 正常）、使用时间、分类、单位筛\n4. **使用**：行上点「使用」→ 填数量、**选用在哪台设备**（没有就当场新建）、选领用人 → 扣库存，写一条使用日志。库存不够直接拦住，不会扣成负数\n5. **入库**：补货、归还都点「入库」\n6. **盘点**：右上「盘点」→ 只填实盘数 → 确认后库存直接改成实盘数，盘盈盘亏各写一条盘点日志。没填的行不动\n7. **日志**：「日志」页按备件、设备、类型、日期筛，能导出成 Markdown / Word\n8. **从发货单导入**：贴发货单的文字 → AI 拆成条目（单价、批次这类进自定义列）→ 导入。SKU 已有的入库，没有的新建；「导入」页能整批撤销\n\n## 序号\n\n每个项目里的备件从 1 开始编号，一直往上加；归档了的号不回收，日志和飞书里都靠它认条目。\n\n## Claude Code 里录发货单\n\n装上插件后，技能 `gantt-spare-parts` 会出现在 Claude Code 里。把发货单图片拖进对话，说「录进 XX 项目的备件」：\n\n- 应用没开：直接写进台账\n- 应用开着：放进收件箱，备件页开着的话 5 秒内自己入库\n\n## 设置\n\n暂无。\n\n## 权限\n\n- 运行 `claude`（发货单识别）和 `gantt`（命令行）\n- 读写自己的台账文件：`<数据目录>/plugins/spare-parts/data/accounts/<账号>/inventory-<项目 id>.json`\n\n## 还不支持\n\n- 飞书同步（下一版）\n- 项目导出 / 云备份不带备件：换电脑要另外把台账文件拷过去\n",
+      "permissions": {
+        "exec": [
+          "claude",
+          "gantt"
+        ]
+      },
+      "skills": [
+        "gantt-spare-parts"
+      ],
+      "download": {
+        "url": "https://github.com/anxelswanz/supergantt-plugins/releases/download/spare-parts-v0.1.0/spare-parts-0.1.0.zip",
+        "sha256": "fd7dc03482e916f71a1fc6eb6463a3918bfc2a965ee10efd055d1698ac368618",
+        "size": 21732
       }
     }
   ]
