@@ -1,0 +1,416 @@
+.sp-root {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 12px 16px;
+  gap: 8px;
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--text);
+}
+.sp-empty {
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+}
+.sp-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.sp-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.sp-tabs {
+  display: flex;
+  gap: 4px;
+  margin-left: 6px;
+}
+.sp-push {
+  margin-left: auto;
+}
+.sp-flex {
+  flex: 1;
+}
+.sp-dim,
+.sp-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.sp-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.sp-note {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.sp-low-text {
+  color: var(--danger);
+}
+
+/* 按钮与胶囊 */
+.sp-btn {
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sp-btn:hover {
+  color: var(--text);
+}
+.sp-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.sp-btn-s {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+.sp-btn-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+.sp-btn-primary:hover {
+  color: #fff;
+  opacity: 0.9;
+}
+.sp-chip {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sp-chip:hover {
+  color: var(--text);
+}
+.sp-chip-on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+/* 筛选条 */
+.sp-filters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.sp-search {
+  height: 26px;
+  width: 260px;
+  padding: 0 10px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+}
+.sp-select {
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11px;
+}
+
+/* 表格 */
+.sp-table {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+.sp-th,
+.sp-tr {
+  display: grid;
+  grid-template-columns: 44px minmax(120px, 1.4fr) 90px minmax(90px, 1fr) 70px 70px 120px minmax(150px, auto);
+  gap: 8px;
+  align-items: center;
+  padding: 0 10px;
+  min-height: 30px;
+}
+.sp-th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-alt);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--rule);
+  min-height: 26px;
+  z-index: 1;
+}
+.sp-tr {
+  border-bottom: 1px solid color-mix(in srgb, var(--rule) 55%, transparent);
+}
+.sp-tr:hover {
+  background: var(--row-hover);
+}
+.sp-rowlow {
+  background: color-mix(in srgb, var(--danger) 5%, transparent);
+}
+.sp-archived {
+  opacity: 0.55;
+}
+.sp-emptyrow {
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.sp-c-act {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+.sp-c-qty {
+  text-align: right;
+}
+.sp-c-check {
+  width: 16px;
+}
+.sp-tag {
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 9px;
+  background: var(--surface-alt);
+  color: var(--text-dim);
+}
+.sp-tag-low {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+/* 日志 */
+.sp-logs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+}
+.sp-logs .sp-table {
+  grid-template-columns: none;
+}
+.sp-logs .sp-th,
+.sp-logs .sp-tr {
+  grid-template-columns: 60px minmax(120px, 1.2fr) 90px 60px 90px minmax(110px, 1fr) 120px;
+}
+.sp-gain {
+  color: var(--ok);
+}
+.sp-loss {
+  color: var(--danger);
+}
+
+/* 弹窗 */
+.sp-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(0 0 0 / 0.35);
+  backdrop-filter: blur(2px);
+}
+.sp-dialog {
+  display: flex;
+  flex-direction: column;
+  width: 460px;
+  max-height: 85vh;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 0.25);
+}
+.sp-wide {
+  width: 760px;
+}
+.sp-dialog-head {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--rule);
+  font-size: 13px;
+  font-weight: 600;
+}
+.sp-dialog-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sp-dialog-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--rule);
+}
+.sp-x {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+}
+.sp-x:hover {
+  color: var(--text);
+}
+
+/* 表单 */
+.sp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sp-field-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+}
+.sp-input {
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--surface-alt);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+.sp-input:focus {
+  border-color: var(--accent);
+}
+.sp-textarea {
+  height: 160px;
+  padding: 8px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.sp-mt {
+  margin-top: 4px;
+}
+.sp-qty {
+  width: 72px;
+  text-align: right;
+}
+.sp-check-table {
+  max-height: 48vh;
+  overflow-y: auto;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+.sp-check-table .sp-th,
+.sp-check-table .sp-tr {
+  grid-template-columns: 44px minmax(120px, 1fr) 70px 80px 70px;
+}
+.sp-check-table .sp-c-qty {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.sp-custom {
+  border-top: 1px solid var(--rule);
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sp-custom-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.sp-logrow {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 4px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--rule) 55%, transparent);
+  font-size: 11px;
+}
+.sp-log-type {
+  min-width: 34px;
+  font-weight: 600;
+}
+.sp-log-note {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sp-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  font-size: 11px;
+}
+
+/* 导入批次 */
+.sp-implog {
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sp-implog-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.sp-implog-rows summary {
+  font-size: 10px;
+  cursor: pointer;
+}
+.sp-implog-row {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0 2px 10px;
+  font-size: 10px;
+  color: var(--text-dim);
+}

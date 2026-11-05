@@ -1,0 +1,36 @@
+{
+  "id": "spare-parts",
+  "name": "备件清单",
+  "version": "0.1.0",
+  "author": "Ronghui",
+  "description": "按项目管一份备件台账：搜索筛选、使用扣减、盘点校准，每次变动都留库存变更日志，可导入发货单",
+  "keywords": [
+    "备件",
+    "库存",
+    "盘点",
+    "spare",
+    "parts",
+    "inventory",
+    "发货单"
+  ],
+  "apiVersion": "1.7",
+  "views": [
+    {
+      "type": "spare-parts.view",
+      "label": "备件",
+      "hint": "备件库存、使用与盘点 —— 每次变动都留日志"
+    }
+  ],
+  "permissions": {
+    "exec": [
+      "claude",
+      "gantt"
+    ]
+  },
+  "skills": [
+    {
+      "dir": "skill",
+      "name": "gantt-spare-parts"
+    }
+  ]
+}
